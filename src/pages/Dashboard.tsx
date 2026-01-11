@@ -125,39 +125,40 @@ const Dashboard = () => {
         }).catch(console.error);
       }
 
-      // Show success message
-      setTimeout(() => {
-        if (isRealTimeConnected) {
-          toast.success('Real-time data connected! Your dashboard will update automatically.');
-          
-          // Check if user has data to migrate
-          const migrationStatus = dataMigrationService.getMigrationStatus();
-          if (migrationStatus.needsMigration) {
-            setShowMigrationPrompt(true);
-          }
+      // Set connection timeout - if no data received in 5 seconds, use fallback
+      const connectionTimeout = setTimeout(() => {
+        if (!isRealTimeConnected) {
+          console.log('Real-time connection timeout, using fallback data');
+          setIsRealTimeConnected(false);
+          setLoading(false);
+          loadFallbackData();
         }
-      }, 2000);
+      }, 5000);
+
+      // Cleanup timeout when component unmounts or connection succeeds
+      const originalCleanup = () => {
+        clearTimeout(connectionTimeout);
+        unsubscribers.forEach(unsubscribe => unsubscribe());
+      };
+
+      return originalCleanup;
 
     } catch (error) {
       console.error('Error setting up real-time listeners:', error);
       setLoading(false);
-      toast.error('Failed to connect to real-time data. Some features may not work properly.');
+      setIsRealTimeConnected(false);
+      loadFallbackData();
+      toast.error('Failed to connect to real-time data. Using offline data.');
     }
-
-    // Cleanup function
-    return () => {
-      console.log('Cleaning up real-time listeners');
-      unsubscribers.forEach(unsubscribe => unsubscribe());
-    };
   }, [currentUser?.uid, authLoading, userProfile]);
 
   // Fallback to localStorage data if Firebase data is not available
   useEffect(() => {
-    if (!isRealTimeConnected && !authLoading && currentUser?.uid) {
+    if (!isRealTimeConnected && !authLoading && currentUser?.uid && !loading) {
       console.log('Loading fallback data from localStorage');
       loadFallbackData();
     }
-  }, [isRealTimeConnected, authLoading, currentUser?.uid]);
+  }, [isRealTimeConnected, authLoading, currentUser?.uid, loading]);
 
   const loadFallbackData = () => {
     try {
@@ -224,7 +225,11 @@ const Dashboard = () => {
       });
       
       setLoading(false);
-      toast.info('Using offline data. Connect to internet for real-time updates.');
+      
+      // Only show offline message if we actually have fallback data
+      if (totalInterviews > 0 || atsScore > 0) {
+        toast.info('Using offline data. Connect to internet for real-time updates.');
+      }
       
     } catch (error) {
       console.error('Failed to load fallback data:', error);
