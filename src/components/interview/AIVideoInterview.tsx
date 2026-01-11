@@ -84,8 +84,9 @@ const AIVideoInterview: React.FC<AIVideoInterviewProps> = ({
   const [interviewPhase, setInterviewPhase] = useState<'waiting' | 'asking' | 'listening' | 'processing' | 'scored' | 'completed'>('waiting');
   const [currentQuestionScore, setCurrentQuestionScore] = useState<number>(0);
   
-  // Session management
-  const sessionId = `video-interview-${Date.now()}`;
+  // Session management - FIXED: Use useRef to prevent infinite re-renders
+  const sessionIdRef = useRef(`video-interview-${Date.now()}`);
+  const sessionId = sessionIdRef.current;
   
   // Refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -101,7 +102,7 @@ const AIVideoInterview: React.FC<AIVideoInterviewProps> = ({
   const audioOnlyStreamRef = useRef<MediaStream | null>(null);
   const isProcessingAnswerRef = useRef<boolean>(false);
 
-  // Initialize interview
+  // Initialize interview - FIXED: Remove sessionId from dependency array
   useEffect(() => {
     // Register session
     sessionManager.registerSession(sessionId);
@@ -113,7 +114,7 @@ const AIVideoInterview: React.FC<AIVideoInterviewProps> = ({
       sessionManager.unregisterSession(sessionId);
       terminateSession();
     };
-  }, [sessionId]);
+  }, []); // FIXED: Empty dependency array to prevent infinite re-renders
 
   const initializeInterview = async () => {
     try {
