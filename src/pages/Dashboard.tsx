@@ -128,10 +128,34 @@ const Dashboard = () => {
       // Set connection timeout - if no data received in 5 seconds, use fallback
       const connectionTimeout = setTimeout(() => {
         if (!isRealTimeConnected) {
-          console.log('Real-time connection timeout, using fallback data');
+          console.log('Real-time connection timeout, checking for fallback data');
           setIsRealTimeConnected(false);
           setLoading(false);
-          loadFallbackData();
+          
+          // Only load fallback if there's actual meaningful offline data
+          const interviewResults = JSON.parse(localStorage.getItem('interviewResults') || '[]') as any[];
+          const atsDataKey = userProfile?.uid ? `ats_analysis_${userProfile.uid}` : 'atsAnalysisResult';
+          const atsData = localStorage.getItem(atsDataKey) || localStorage.getItem('atsAnalysisResult');
+          
+          const hasInterviewData = interviewResults.length > 0 && interviewResults.some(interview => 
+            interview && typeof interview === 'object' && interview.averageScore !== undefined
+          );
+          
+          let hasAtsData = false;
+          if (atsData) {
+            try {
+              const parsedAts = JSON.parse(atsData);
+              hasAtsData = parsedAts && (parsedAts.overallScore > 0 || parsedAts.score > 0 || parsedAts.atsScore > 0);
+            } catch (e) {
+              hasAtsData = false;
+            }
+          }
+          
+          if (hasInterviewData || hasAtsData) {
+            loadFallbackData();
+          } else {
+            console.log('No meaningful offline data available, using empty state');
+          }
         }
       }, 5000);
 
@@ -147,8 +171,32 @@ const Dashboard = () => {
       console.error('Error setting up real-time listeners:', error);
       setLoading(false);
       setIsRealTimeConnected(false);
-      loadFallbackData();
-      toast.error('Failed to connect to real-time data. Using offline data.');
+      
+      // Only show fallback data if it actually exists and is meaningful
+      const interviewResults = JSON.parse(localStorage.getItem('interviewResults') || '[]') as any[];
+      const atsDataKey = userProfile?.uid ? `ats_analysis_${userProfile.uid}` : 'atsAnalysisResult';
+      const atsData = localStorage.getItem(atsDataKey) || localStorage.getItem('atsAnalysisResult');
+      
+      const hasInterviewData = interviewResults.length > 0 && interviewResults.some(interview => 
+        interview && typeof interview === 'object' && interview.averageScore !== undefined
+      );
+      
+      let hasAtsData = false;
+      if (atsData) {
+        try {
+          const parsedAts = JSON.parse(atsData);
+          hasAtsData = parsedAts && (parsedAts.overallScore > 0 || parsedAts.score > 0 || parsedAts.atsScore > 0);
+        } catch (e) {
+          hasAtsData = false;
+        }
+      }
+      
+      if (hasInterviewData || hasAtsData) {
+        loadFallbackData();
+        toast.error('Failed to connect to real-time data. Using offline data.');
+      } else {
+        toast.error('Failed to connect to real-time data. Please check your internet connection.');
+      }
     }
   }, [currentUser?.uid, authLoading, userProfile]);
 
@@ -162,8 +210,35 @@ const Dashboard = () => {
 
   const loadFallbackData = () => {
     try {
-      // Load interview results from localStorage
+      // Check if there's actually any offline data before proceeding
       const interviewResults = JSON.parse(localStorage.getItem('interviewResults') || '[]') as any[];
+      const atsDataKey = userProfile?.uid ? `ats_analysis_${userProfile.uid}` : 'atsAnalysisResult';
+      const atsData = localStorage.getItem(atsDataKey) || localStorage.getItem('atsAnalysisResult');
+      
+      // More thorough check for meaningful offline data
+      const hasInterviewData = interviewResults.length > 0 && interviewResults.some(interview => 
+        interview && typeof interview === 'object' && interview.averageScore !== undefined
+      );
+      
+      let hasAtsData = false;
+      if (atsData) {
+        try {
+          const parsedAts = JSON.parse(atsData);
+          hasAtsData = parsedAts && (parsedAts.overallScore > 0 || parsedAts.score > 0 || parsedAts.atsScore > 0);
+        } catch (e) {
+          hasAtsData = false;
+        }
+      }
+      
+      // If no meaningful offline data exists, don't show offline message and use empty state
+      if (!hasInterviewData && !hasAtsData) {
+        console.log('No meaningful offline data found, using empty state');
+        setLoading(false);
+        return;
+      }
+
+      console.log('Loading actual offline data...', { hasInterviewData, hasAtsData });
+      
       const formattedInterviews = interviewResults.map(interview => ({
         ...interview,
         id: interview.id || Date.now().toString(),
@@ -172,11 +247,7 @@ const Dashboard = () => {
       }));
       setRecentInterviews(formattedInterviews.slice(-5));
       
-      // Load ATS data from localStorage
-      const atsDataKey = userProfile?.uid ? `ats_analysis_${userProfile.uid}` : 'atsAnalysisResult';
-      const atsData = localStorage.getItem(atsDataKey) || localStorage.getItem('atsAnalysisResult');
       let atsScore = 0;
-      
       if (atsData) {
         try {
           const parsedAts = JSON.parse(atsData);
@@ -205,9 +276,9 @@ const Dashboard = () => {
       // Calculate stats from fallback data
       const totalInterviews = formattedInterviews.length;
       const totalTime = formattedInterviews.reduce((sum, interview) => sum + (interview.duration || 0), 0);
-      const totalScores = formattedInterviews.reduce((sum, interview) => sum + interview.averageScore, 0);
+      const totalScores = formattedInterviews.reduce((sum, interview) => sum + (interview.averageScore || 0), 0);
       const averageScore = totalInterviews > 0 ? Math.round(totalScores / totalInterviews) : 0;
-      const lastScore = formattedInterviews.length > 0 ? formattedInterviews[formattedInterviews.length - 1].averageScore : 0;
+      const lastScore = formattedInterviews.length > 0 ? formattedInterviews[formattedInterviews.length - 1]?.averageScore || 0 : 0;
       
       const profileCompleteness = userProfile ? realtimeDataService.calculateProfileCompleteness(userProfile) : 0;
       
@@ -226,8 +297,9 @@ const Dashboard = () => {
       
       setLoading(false);
       
-      // Only show offline message if we actually have fallback data
-      if (totalInterviews > 0 || atsScore > 0) {
+      // Only show offline message if we actually loaded meaningful data
+      if (hasInterviewData || hasAtsData) {
+        console.log('Showing offline data message - found meaningful data:', { hasInterviewData, hasAtsData });
         toast.info('Using offline data. Connect to internet for real-time updates.');
       }
       

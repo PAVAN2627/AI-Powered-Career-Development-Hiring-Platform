@@ -248,6 +248,16 @@ const ATSAnalyzer = () => {
           };
         }
         
+        // Ensure each skill array exists
+        if (!enhancedResult.extractedSkills.technical) enhancedResult.extractedSkills.technical = [];
+        if (!enhancedResult.extractedSkills.softSkills) enhancedResult.extractedSkills.softSkills = [];
+        if (!enhancedResult.extractedSkills.tools) enhancedResult.extractedSkills.tools = [];
+        if (!enhancedResult.extractedSkills.languages) enhancedResult.extractedSkills.languages = [];
+        if (!enhancedResult.extractedSkills.certifications) enhancedResult.extractedSkills.certifications = [];
+        if (!enhancedResult.extractedSkills.experience) {
+          enhancedResult.extractedSkills.experience = { yearsTotal: 0, companies: [], roles: [] };
+        }
+        
         // Ensure aiAnalysis has required structure
         if (!enhancedResult.aiAnalysis) {
           enhancedResult.aiAnalysis = {
@@ -260,6 +270,21 @@ const ATSAnalyzer = () => {
             topSkillGaps: ['JavaScript', 'HTML', 'CSS']
           };
         }
+        
+        // Ensure each aiAnalysis array exists
+        if (!enhancedResult.aiAnalysis.strengths) enhancedResult.aiAnalysis.strengths = ['Professional experience'];
+        if (!enhancedResult.aiAnalysis.weaknesses) enhancedResult.aiAnalysis.weaknesses = ['Need skill development'];
+        if (!enhancedResult.aiAnalysis.opportunities) enhancedResult.aiAnalysis.opportunities = ['Learn modern technologies'];
+        if (!enhancedResult.aiAnalysis.recommendations) enhancedResult.aiAnalysis.recommendations = ['Focus on core technologies'];
+        if (!enhancedResult.aiAnalysis.topSkillGaps) enhancedResult.aiAnalysis.topSkillGaps = ['JavaScript', 'HTML', 'CSS'];
+        if (!enhancedResult.aiAnalysis.careerPath) enhancedResult.aiAnalysis.careerPath = 'Entry-level development role';
+        if (!enhancedResult.aiAnalysis.estimatedLevel) enhancedResult.aiAnalysis.estimatedLevel = 'junior';
+        
+        // Ensure roleMatches exists
+        if (!enhancedResult.roleMatches) enhancedResult.roleMatches = [];
+        
+        // Ensure learningPath exists
+        if (!enhancedResult.learningPath) enhancedResult.learningPath = [];
         
       } catch (analysisError) {
         console.error('Enhanced ATS analysis failed:', analysisError);
@@ -299,62 +324,64 @@ const ATSAnalyzer = () => {
           // Generate and save learning path for the best matching role
           if (enhancedResult.bestMatches && enhancedResult.bestMatches.length > 0 && enhancedResult.bestMatches[0]) {
             const bestMatch = enhancedResult.bestMatches[0];
-            const learningPath = learningPathService.generateLearningPath({
-              id: 'temp',
-              userId: userProfile.uid,
-              overallScore: enhancedResult.overallScore,
-              skillsMatch: bestMatch.score || 0,
-              experienceMatch: 75,
-              educationMatch: 80,
-              keywordsFound: enhancedResult.extractedSkills.technical || [],
-              missingKeywords: bestMatch.missingRequired || [],
-              suggestions: enhancedResult.aiAnalysis?.recommendations || [],
-              jobTitle: bestMatch.role || 'Unknown',
-              timestamp: new Date()
-            }, bestMatch.role);
+            if (bestMatch && bestMatch.role) {
+              const learningPath = learningPathService.generateLearningPath({
+                id: 'temp',
+                userId: userProfile.uid,
+                overallScore: enhancedResult.overallScore,
+                skillsMatch: bestMatch.score || 0,
+                experienceMatch: 75,
+                educationMatch: 80,
+                keywordsFound: enhancedResult.extractedSkills?.technical || [],
+                missingKeywords: bestMatch.missingRequired || [],
+                suggestions: enhancedResult.aiAnalysis?.recommendations || [],
+                jobTitle: bestMatch.role || 'Unknown',
+                timestamp: new Date()
+              }, bestMatch.role);
 
-            await learningPathService.saveLearningPath(learningPath);
+              await learningPathService.saveLearningPath(learningPath);
 
-            // Also save enhanced learning path data to roadmap
-            const { doc, setDoc } = await import('firebase/firestore');
-            const { db } = await import('@/lib/firebase');
-            
-            const roadmapRef = doc(db, 'roadmaps', userProfile.uid);
-            const roadmapData = {
-              userId: userProfile.uid,
-              lastUpdated: new Date().toISOString(),
-              resumeScore: enhancedResult.overallScore,
-              bestMatchRole: bestMatch.role,
-              selectedRole: bestMatch.role,
-              targetRoles: enhancedResult.bestMatches.map(m => m.role),
-              extractedSkills: enhancedResult.extractedSkills.technical || [],
-              aiAnalysis: enhancedResult.aiAnalysis,
-              skillGaps: {
-                [bestMatch.role]: bestMatch.missingRequired || []
-              },
-              learningPaths: {
-                [bestMatch.role]: enhancedResult.learningPath.map(resource => ({
-                  skill: resource.skill,
-                  title: resource.courses[0]?.title || `Learn ${resource.skill}`,
-                  provider: resource.courses[0]?.platform || 'Various',
-                  url: resource.courses[0]?.url || '#',
-                  duration: resource.courses[0]?.duration || `${resource.estimatedHours} hours`,
-                  priority: resource.priority
-                }))
-              },
-              certifications: {
-                [bestMatch.role]: enhancedResult.learningPath.map(resource => ({
-                  name: `${resource.skill} Professional Certificate`,
-                  provider: 'Industry Standard',
-                  url: '#',
-                  difficulty: 'intermediate',
-                  priority: resource.priority
-                }))
-              },
-              progress: {}
-            };
+              // Also save enhanced learning path data to roadmap
+              const { doc, setDoc } = await import('firebase/firestore');
+              const { db } = await import('@/lib/firebase');
+              
+              const roadmapRef = doc(db, 'roadmaps', userProfile.uid);
+              const roadmapData = {
+                userId: userProfile.uid,
+                lastUpdated: new Date().toISOString(),
+                resumeScore: enhancedResult.overallScore,
+                bestMatchRole: bestMatch.role,
+                selectedRole: bestMatch.role,
+                targetRoles: enhancedResult.bestMatches?.map(m => m?.role).filter(Boolean) || [],
+                extractedSkills: enhancedResult.extractedSkills?.technical || [],
+                aiAnalysis: enhancedResult.aiAnalysis,
+                skillGaps: {
+                  [bestMatch.role]: bestMatch.missingRequired || []
+                },
+                learningPaths: {
+                  [bestMatch.role]: (enhancedResult.learningPath || []).map(resource => ({
+                    skill: resource?.skill || 'Unknown',
+                    title: resource?.courses?.[0]?.title || `Learn ${resource?.skill || 'Skill'}`,
+                    provider: resource?.courses?.[0]?.platform || 'Various',
+                    url: resource?.courses?.[0]?.url || '#',
+                    duration: resource?.courses?.[0]?.duration || `${resource?.estimatedHours || 10} hours`,
+                    priority: resource?.priority || 'medium'
+                  }))
+                },
+                certifications: {
+                  [bestMatch.role]: (enhancedResult.learningPath || []).map(resource => ({
+                    name: `${resource?.skill || 'Skill'} Professional Certificate`,
+                    provider: 'Industry Standard',
+                    url: '#',
+                    difficulty: 'intermediate',
+                    priority: resource?.priority || 'medium'
+                  }))
+                },
+                progress: {}
+              };
 
-            await setDoc(roadmapRef, roadmapData, { merge: true });
+              await setDoc(roadmapRef, roadmapData, { merge: true });
+            }
           }
 
           console.log('Analysis and learning path saved to Firebase');
@@ -732,18 +759,18 @@ Tools: Git, Docker, AWS, JIRA"
                             <Star className="w-5 h-5 text-accent" />
                             <h3 className="font-semibold">Best Match</h3>
                           </div>
-                          <p className="font-medium text-lg">{analysisResult.bestMatches[0]?.role}</p>
+                          <p className="font-medium text-lg">{analysisResult.bestMatches?.[0]?.role || 'No match found'}</p>
                           <Badge variant="default" className="mt-2">
-                            {analysisResult.bestMatches[0]?.score}% Match
+                            {analysisResult.bestMatches?.[0]?.score || 0}% Match
                           </Badge>
                         </div>
 
                         {/* Second Best Match */}
                         <div className="p-4 border rounded-lg">
                           <h3 className="font-semibold mb-2">Second Best</h3>
-                          <p className="font-medium text-lg">{analysisResult.bestMatches[1]?.role || 'N/A'}</p>
-                          <Badge variant={analysisResult.bestMatches[1]?.score >= 70 ? "default" : "secondary"} className="mt-2">
-                            {analysisResult.bestMatches[1]?.score || 0}% Match
+                          <p className="font-medium text-lg">{analysisResult.bestMatches?.[1]?.role || 'N/A'}</p>
+                          <Badge variant={analysisResult.bestMatches?.[1]?.score >= 70 ? "default" : "secondary"} className="mt-2">
+                            {analysisResult.bestMatches?.[1]?.score || 0}% Match
                           </Badge>
                         </div>
 
@@ -1049,7 +1076,7 @@ Tools: Git, Docker, AWS, JIRA"
                               <Alert className="border-blue-200 bg-blue-50">
                                 <Brain className="h-4 w-4" />
                                 <AlertDescription>
-                                  <strong>Personalized for {analysisResult.bestMatches[0].role}</strong>
+                                  <strong>Personalized for {analysisResult.bestMatches?.[0]?.role || 'Your Target Role'}</strong>
                                   <br />
                                   Based on your ATS analysis, here are the critical skills you need to develop to become job-ready for this role.
                                 </AlertDescription>
@@ -1058,10 +1085,10 @@ Tools: Git, Docker, AWS, JIRA"
                               {/* Critical Skills Section */}
                               <div className="space-y-4">
                                 <h3 className="font-semibold text-lg flex items-center gap-2">
-                                  🔥 Critical Skills ({analysisResult.bestMatches[0].missingRequired.length})
+                                  🔥 Critical Skills ({analysisResult.bestMatches?.[0]?.missingRequired?.length || 0})
                                 </h3>
                                 
-                                {analysisResult.bestMatches[0].missingRequired.map((skill: string, index: number) => {
+                                {(analysisResult.bestMatches?.[0]?.missingRequired || []).map((skill: string, index: number) => {
                                   const skillResources = learningPathService.getSkillResources(skill);
                                   const skillCertifications = learningPathService.getSkillCertifications(skill);
                                   
@@ -1175,24 +1202,24 @@ Tools: Git, Docker, AWS, JIRA"
                                 <div className="grid md:grid-cols-3 gap-4 text-sm">
                                   <div className="text-center">
                                     <div className="text-2xl font-bold text-primary">
-                                      {analysisResult.bestMatches[0].missingRequired.length}
+                                      {analysisResult.bestMatches?.[0]?.missingRequired?.length || 0}
                                     </div>
                                     <div className="text-muted-foreground">Skills to Learn</div>
                                   </div>
                                   <div className="text-center">
                                     <div className="text-2xl font-bold text-primary">
-                                      {analysisResult.bestMatches[0].missingRequired.reduce((total: number, skill: string) => {
+                                      {(analysisResult.bestMatches?.[0]?.missingRequired || []).reduce((total: number, skill: string) => {
                                         const resources = learningPathService.getSkillResources(skill);
-                                        return total + resources.reduce((sum, r) => sum + r.estimatedHours, 0);
+                                        return total + resources.reduce((sum, r) => sum + (r?.estimatedHours || 0), 0);
                                       }, 0)}h
                                     </div>
                                     <div className="text-muted-foreground">Estimated Study Time</div>
                                   </div>
                                   <div className="text-center">
                                     <div className="text-2xl font-bold text-primary">
-                                      {Math.ceil(analysisResult.bestMatches[0].missingRequired.reduce((total: number, skill: string) => {
+                                      {Math.ceil((analysisResult.bestMatches?.[0]?.missingRequired || []).reduce((total: number, skill: string) => {
                                         const resources = learningPathService.getSkillResources(skill);
-                                        return total + resources.reduce((sum, r) => sum + r.estimatedHours, 0);
+                                        return total + resources.reduce((sum, r) => sum + (r?.estimatedHours || 0), 0);
                                       }, 0) / 10)}
                                     </div>
                                     <div className="text-muted-foreground">Weeks (10h/week)</div>
