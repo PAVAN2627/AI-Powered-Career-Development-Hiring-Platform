@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
 import { 
   Settings as SettingsIcon, 
   Bell, 
@@ -45,11 +46,12 @@ const Settings = () => {
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
+      <MobileBottomNav />
       
       <div className="lg:ml-64 transition-all duration-300">
         <DashboardHeader />
         
-        <main className="p-6">
+        <main className="p-6 pb-20 lg:pb-6">
           <div className="mb-8">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-foreground mb-2">
               Settings

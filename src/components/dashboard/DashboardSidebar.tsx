@@ -20,7 +20,7 @@ const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/dashboard" },
   { icon: User, label: "My Profile", path: "/dashboard/profile" },
   { icon: FileText, label: "Resume Builder", path: "/resume-builder" },
-  { icon: Target, label: "ATS Analyzer", path: "/ats-analyzer" },
+  { icon: Target, label: "ATS Analyzer (Enhanced)", path: "/ats-analyzer" },
   { icon: TrendingUp, label: "Career Roadmap", path: "/dashboard/roadmap" },
   { icon: Video, label: "Interview Practice", path: "/mock-interview" },
   { icon: MessageSquare, label: "Opportunities", path: "/opportunities" },
@@ -42,7 +42,7 @@ const DashboardSidebar = () => {
 
   return (
     <aside className={cn(
-      "fixed left-0 top-0 h-screen bg-card border-r border-border flex flex-col transition-all duration-300 z-40",
+      "fixed left-0 top-0 h-screen bg-card border-r border-border flex-col transition-all duration-300 z-40 hidden lg:flex",
       collapsed ? "w-20" : "w-64"
     )}>
       {/* Logo */}

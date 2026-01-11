@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
 import { doc, updateDoc } from "firebase/firestore";
 import { updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 import { db, convertFileToBase64 } from "@/lib/firebase";
@@ -502,7 +503,10 @@ const Profile = () => {
   };
 
   const handleSaveChanges = async () => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      setError("User not authenticated");
+      return;
+    }
 
     try {
       setLoading(true);
@@ -530,25 +534,38 @@ const Profile = () => {
         githubUrl: formData.githubUrl,
         portfolioUrl: formData.portfolioUrl,
         profilePhotoUrl: formData.profilePhotoUrl, // Add profile photo
+        avatar: formData.profilePhotoUrl, // Also save as avatar for compatibility
         skills: skills,
         projects: projects,
         resume: uploadedResume, // Add resume data
         isPublic: isPublic,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        role: 'student' // Ensure role is set
       };
 
-      console.log('Saving profile data:', updateData); // Debug log
+      console.log('Saving profile data for user:', currentUser.uid);
+      console.log('Update data:', updateData);
 
       const userDocRef = doc(db, 'users', currentUser.uid);
       await updateDoc(userDocRef, updateData);
       
+      console.log('Profile updated successfully in Firestore');
       setMessage("Profile updated successfully!");
       
       // Auto-hide success message after 5 seconds
       setTimeout(() => setMessage(""), 5000);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating profile:", error);
-      setError("Failed to update profile. Please try again.");
+      console.error("Error code:", error.code);
+      console.error("Error message:", error.message);
+      
+      if (error.code === 'permission-denied') {
+        setError("Permission denied. Please check your authentication status.");
+      } else if (error.code === 'not-found') {
+        setError("User document not found. Please try logging out and back in.");
+      } else {
+        setError(`Failed to update profile: ${error.message}`);
+      }
       
       // Auto-hide error message after 5 seconds
       setTimeout(() => setError(""), 5000);
@@ -560,11 +577,12 @@ const Profile = () => {
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
+      <MobileBottomNav />
       
       <div className="lg:ml-64 transition-all duration-300">
         <DashboardHeader />
         
-        <main className="p-6">
+        <main className="p-6 pb-20 lg:pb-6">
           {message && (
             <Alert className="mb-6 border-success/50 text-success">
               <AlertDescription>{message}</AlertDescription>

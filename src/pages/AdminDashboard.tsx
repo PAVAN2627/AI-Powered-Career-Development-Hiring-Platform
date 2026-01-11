@@ -45,6 +45,7 @@ interface PendingRecruiter {
 }
 
 const AdminDashboard = () => {
+  const [activeSection, setActiveSection] = useState<'recruiters' | 'students' | 'analytics' | 'settings'>('recruiters');
   const [pendingRecruiters, setPendingRecruiters] = useState<PendingRecruiter[]>([]);
   const [stats, setStats] = useState({
     totalStudents: 0,
@@ -53,8 +54,6 @@ const AdminDashboard = () => {
     activeInterviews: 0
   });
   const [loading, setLoading] = useState(true);
-
-  console.log('AdminDashboard component loaded');
 
   useEffect(() => {
     loadDashboardData();

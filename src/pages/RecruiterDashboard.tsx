@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import RecruiterSidebar from "@/components/recruiter/RecruiterSidebar";
 import { toast } from "sonner";
 import { messagingService, type Conversation, type Message, type TypingIndicator } from "@/lib/messagingService";
+import { db } from "@/lib/firebase";
 import { 
   Search, 
   Filter, 
@@ -149,13 +150,18 @@ const RecruiterDashboard = () => {
   const [tempProfile, setTempProfile] = useState<RecruiterProfile | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [creatingChatFor, setCreatingChatFor] = useState<string | null>(null);
 
   // Load students and recruiter profile from Firebase
   useEffect(() => {
-    loadStudents();
-    loadMessages();
-    loadRecruiterProfile();
-  }, []);
+    if (!isInitialized && currentUser?.uid) {
+      loadStudents();
+      loadMessages();
+      loadRecruiterProfile();
+      setIsInitialized(true);
+    }
+  }, [currentUser?.uid, isInitialized]);
 
   // Subscribe to conversations for messaging system
   useEffect(() => {
@@ -186,16 +192,35 @@ const RecruiterDashboard = () => {
     } catch (error) {
       console.error('Error setting up conversation subscription:', error);
       toast.error('Failed to connect to messaging service');
+      
+      // Try manual loading as fallback
+      setTimeout(() => {
+        console.log('Attempting manual conversation loading...');
+        loadConversationsManually();
+      }, 2000);
     }
   }, [currentUser?.uid]);
 
   // Subscribe to messages for selected conversation
   useEffect(() => {
-    if (!selectedConversation?.id) return;
+    if (!selectedConversation?.id) {
+      console.log('No selected conversation, clearing messages');
+      setConversationMessages([]);
+      return;
+    }
+
+    console.log('Setting up message subscription for conversation:', selectedConversation.id);
 
     const unsubscribe = messagingService.subscribeToMessages(
       selectedConversation.id,
       (messagesList) => {
+        console.log('Received messages update:', messagesList.length, 'messages');
+        console.log('Messages:', messagesList.map(m => ({
+          id: m.id,
+          content: m.content.substring(0, 50) + '...',
+          senderId: m.senderId,
+          timestamp: m.timestamp
+        })));
         setConversationMessages(messagesList);
         // Mark messages as read
         if (currentUser?.uid) {
@@ -211,6 +236,8 @@ const RecruiterDashboard = () => {
   useEffect(() => {
     if (!selectedConversation?.id) return;
 
+    // Temporarily disabled typing indicators to focus on message sending
+    /*
     const unsubscribe = messagingService.subscribeToTypingIndicators(
       selectedConversation.id,
       (indicators) => {
@@ -223,6 +250,7 @@ const RecruiterDashboard = () => {
     );
 
     return unsubscribe;
+    */
   }, [selectedConversation?.id, currentUser?.uid]);
 
   // Auto-scroll to bottom when new messages arrive
@@ -396,10 +424,16 @@ const RecruiterDashboard = () => {
   const sendMessageInConversation = async () => {
     if (!newMessage.trim() || !selectedConversation || !currentUser?.uid || isSending) return;
     
+    console.log('=== SENDING MESSAGE ===');
+    console.log('Message content:', newMessage.trim());
+    console.log('Selected conversation:', selectedConversation.id);
+    console.log('Current user:', currentUser.uid);
+    console.log('Recruiter name:', recruitingProfile.companyName || userProfile?.displayName || 'Recruiter');
+    
     setIsSending(true);
     try {
-      console.log('Sending message from recruiter:', currentUser.uid);
-      await messagingService.sendMessage(
+      console.log('Calling messagingService.sendMessage...');
+      const messageId = await messagingService.sendMessage(
         selectedConversation.id,
         currentUser.uid,
         recruitingProfile.companyName || userProfile?.displayName || 'Recruiter',
@@ -412,13 +446,24 @@ const RecruiterDashboard = () => {
         (userProfile as any)?.avatar || ''
       );
       
-      console.log('Message sent successfully');
+      console.log('Message sent successfully with ID:', messageId);
       setNewMessage('');
       setReplyingTo(null);
       messageInputRef.current?.focus();
-    } catch (error) {
+      toast.success('Message sent!');
+    } catch (error: any) {
       console.error('Error sending message:', error);
-      toast.error('Failed to send message');
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
+      
+      if (error.code === 'permission-denied') {
+        toast.error('Permission denied. Please check your account permissions.');
+      } else {
+        toast.error('Failed to send message: ' + error.message);
+      }
     } finally {
       setIsSending(false);
     }
@@ -427,6 +472,8 @@ const RecruiterDashboard = () => {
   const handleTyping = () => {
     if (!selectedConversation || !currentUser?.uid) return;
 
+    // Temporarily disabled typing indicators to focus on message sending
+    /*
     if (!isTyping) {
       setIsTyping(true);
       messagingService.sendTypingIndicator(
@@ -445,6 +492,7 @@ const RecruiterDashboard = () => {
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
     }, 1000);
+    */
   };
 
   const handleReply = (message: Message) => {
@@ -461,36 +509,152 @@ const RecruiterDashboard = () => {
 
     try {
       console.log('Manually loading conversations for recruiter:', currentUser.uid);
-      const { collection, query, where, getDocs, orderBy } = await import('firebase/firestore');
+      const { collection, query, where, getDocs } = await import('firebase/firestore');
       const { db } = await import('@/lib/firebase');
       
       const conversationsRef = collection(db, 'conversations');
+      
+      // Use simpler query without orderBy to avoid index requirements
       const q = query(
         conversationsRef,
         where('participants.recruiterId', '==', currentUser.uid),
-        where('isActive', '==', true),
-        orderBy('updatedAt', 'desc')
+        where('isActive', '==', true)
       );
 
       const snapshot = await getDocs(q);
-      const conversationsList = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date(),
-        updatedAt: doc.data().updatedAt?.toDate() || new Date(),
-        lastMessage: {
-          ...doc.data().lastMessage,
-          timestamp: doc.data().lastMessage?.timestamp?.toDate() || new Date()
-        }
-      })) as Conversation[];
+      console.log('Manual query returned', snapshot.docs.length, 'documents');
+      
+      const conversationsList = snapshot.docs.map(doc => {
+        const data = doc.data();
+        console.log('Processing conversation doc:', doc.id, data);
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate() || new Date(),
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+          lastMessage: {
+            ...data.lastMessage,
+            timestamp: data.lastMessage?.timestamp?.toDate() || new Date()
+          }
+        };
+      }) as Conversation[];
+
+      // Sort by updatedAt in JavaScript instead of Firestore
+      conversationsList.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
       console.log('Manually loaded conversations:', conversationsList);
       setConversations(conversationsList);
-      toast.success(`Loaded ${conversationsList.length} conversations`);
-    } catch (error) {
+      
+      if (conversationsList.length > 0) {
+        toast.success(`Loaded ${conversationsList.length} conversations`);
+      } else {
+        console.log('No conversations found for recruiter:', currentUser.uid);
+        toast.info('No conversations found. Start chatting with students to see them here.');
+      }
+    } catch (error: any) {
       console.error('Error manually loading conversations:', error);
-      toast.error('Failed to load conversations');
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message
+      });
+      
+      if (error.code === 'permission-denied') {
+        toast.error('Permission denied. Please check Firestore security rules.');
+      } else if (error.message.includes('index')) {
+        toast.error('Database index required. Please create the required indexes or contact support.');
+        console.error('Index creation URL: https://console.firebase.google.com/project/careermitra-ef490/firestore/indexes');
+      } else {
+        toast.error('Failed to load conversations: ' + error.message);
+      }
     }
+  };
+
+  // Generate AI-powered professional message
+  const generateProfessionalInitialMessage = (student: Student): string => {
+    const companyName = recruitingProfile.companyName || 'our company';
+    const recruiterName = userProfile?.displayName || 'our team';
+    
+    // Create personalized message based on student's profile
+    const skillsText = student.skills.length > 0 
+      ? `your expertise in ${student.skills.slice(0, 3).join(', ')}${student.skills.length > 3 ? ' and other technologies' : ''}` 
+      : 'your technical background';
+    
+    const experienceText = student.experience 
+      ? ` and your experience in ${student.experience}` 
+      : '';
+    
+    const educationText = student.college || student.university 
+      ? ` Your educational background at ${student.college || student.university} also caught our attention.` 
+      : '';
+    
+    const locationText = student.location && student.location !== 'Not specified'
+      ? ` We have opportunities in ${student.location} and other locations.`
+      : '';
+
+    const targetRoleText = student.targetRoles && student.targetRoles.length > 0
+      ? ` I noticed you're interested in ${student.targetRoles[0]} roles, which aligns perfectly with some of our current openings.`
+      : '';
+
+    const projectsText = student.projects && student.projects.length > 0
+      ? ` Your project work, especially "${student.projects[0].title}", demonstrates the kind of innovative thinking we value.`
+      : '';
+
+    const templates = [
+      `Hi ${student.name}! 👋
+
+I hope this message finds you well. I'm reaching out from ${companyName} because ${skillsText}${experienceText} really impressed me.${educationText}${targetRoleText}${projectsText}
+
+${locationText}
+
+I'd love to discuss some exciting opportunities that could be a great fit for your career goals. Would you be open to a brief conversation this week?
+
+Looking forward to connecting!
+
+Best regards,
+${recruiterName}
+${companyName}`,
+
+      `Hello ${student.name}! 
+
+Your profile really stood out to me, particularly ${skillsText}${experienceText}.${educationText}${projectsText}
+
+At ${companyName}, we're always looking for talented individuals like yourself who can bring fresh perspectives and technical excellence to our team.${targetRoleText}${locationText}
+
+I'd be delighted to share more about our current opportunities and learn about your career aspirations. Are you available for a quick chat this week?
+
+Best regards,
+${recruiterName}
+${companyName}`,
+
+      `Hi ${student.name}! 
+
+I came across your profile and was immediately impressed by ${skillsText}${experienceText}.${educationText}${projectsText}
+
+${companyName} is expanding our team, and I believe your background could be an excellent match for several of our current openings.${targetRoleText}${locationText}
+
+Would you be interested in exploring potential opportunities with us? I'd love to schedule a brief call to discuss how we might work together.
+
+Looking forward to hearing from you!
+
+Warm regards,
+${recruiterName}
+${companyName}`,
+
+      `Dear ${student.name},
+
+I hope you're doing well! I discovered your profile while searching for talented professionals, and ${skillsText}${experienceText} immediately caught my attention.${educationText}${projectsText}
+
+At ${companyName}, we believe in fostering innovation and growth.${targetRoleText}${locationText} I think there could be some fantastic opportunities for someone with your background.
+
+Would you be interested in a brief conversation to explore how we might collaborate? I'm confident we could offer something that aligns with your career aspirations.
+
+Best wishes,
+${recruiterName}
+${companyName}`
+    ];
+
+    // Select a random template for variety
+    return templates[Math.floor(Math.random() * templates.length)];
   };
 
   const createConversationWithStudent = async (student: Student) => {
@@ -504,6 +668,26 @@ const RecruiterDashboard = () => {
       console.error('Invalid student data:', student);
       return;
     }
+
+    // Prevent multiple simultaneous chat creations
+    if (creatingChatFor) {
+      toast.error('Please wait, already creating a chat...');
+      return;
+    }
+
+    // Check if conversation already exists
+    const existingConversation = conversations.find(c => 
+      c.participants.studentId === student.id && c.participants.recruiterId === currentUser.uid
+    );
+
+    if (existingConversation) {
+      setActiveSection("messages");
+      setSelectedConversation(existingConversation);
+      toast.success('Opening existing conversation with ' + student.name);
+      return;
+    }
+
+    setCreatingChatFor(student.id);
 
     try {
       console.log('Creating conversation with student:', {
@@ -530,13 +714,17 @@ const RecruiterDashboard = () => {
         throw new Error('No conversation ID returned');
       }
 
-      // Send an initial message to populate the conversation
+      // Generate and send a personalized professional message
+      const professionalMessage = generateProfessionalInitialMessage(student);
+      
+      console.log('Sending professional message:', professionalMessage.substring(0, 100) + '...');
+      
       await messagingService.sendMessage(
         conversationId,
         currentUser.uid,
         recruitingProfile.companyName || userProfile?.displayName || 'Recruiter',
         'recruiter',
-        `Hi ${student.name}! I'm interested in discussing potential opportunities with you. Looking forward to connecting!`,
+        professionalMessage,
         'text',
         undefined,
         undefined,
@@ -544,13 +732,19 @@ const RecruiterDashboard = () => {
         (userProfile as any)?.avatar || ''
       );
 
-      console.log('Initial message sent');
+      console.log('Professional initial message sent successfully');
       
       // Switch to messages section immediately
       setActiveSection("messages");
-      toast.success('Conversation started successfully!');
+      toast.success('Professional message sent! Conversation started successfully.');
       
-      // Try to find and select the conversation after a short delay
+      // Force reload conversations to ensure the new one appears
+      setTimeout(() => {
+        console.log('Reloading conversations after creation...');
+        loadConversationsManually();
+      }, 1000);
+      
+      // Try to find and select the conversation after a longer delay
       setTimeout(() => {
         const conversation = conversations.find(c => c.id === conversationId);
         if (conversation) {
@@ -558,12 +752,28 @@ const RecruiterDashboard = () => {
           setSelectedConversation(conversation);
         } else {
           console.log('Conversation not found in list yet, will appear shortly');
+          // Try one more time to reload
+          loadConversationsManually();
         }
-      }, 1500);
+      }, 2500);
       
     } catch (error: any) {
       console.error('Error creating conversation:', error);
-      toast.error('Failed to start conversation. Please try again.');
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack
+      });
+      
+      if (error.code === 'permission-denied') {
+        toast.error('Permission denied. Please check your account permissions.');
+      } else if (error.message.includes('Missing required parameters')) {
+        toast.error('Invalid student or recruiter data. Please try again.');
+      } else {
+        toast.error('Failed to start conversation: ' + error.message);
+      }
+    } finally {
+      setCreatingChatFor(null);
     }
   };
 
@@ -678,13 +888,21 @@ ${recruitingProfile.companyName} Team`
             <p className="text-muted-foreground mb-4">
               Discover and connect with talented students
             </p>
-            <div className="flex items-center gap-4 text-sm">
-              <Badge variant="secondary" className="flex items-center gap-1">
-                <Zap className="w-3 h-3" />
+            <div className="flex items-center gap-4 text-sm flex-wrap">
+              <Badge variant="secondary" className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
                 Live Data
               </Badge>
-              <span className="text-muted-foreground">
-                Last updated: {new Date().toLocaleTimeString()}
+              <Badge variant="outline" className="flex items-center gap-1.5">
+                <Users className="w-3 h-3" />
+                {conversations.length} Active Chats
+              </Badge>
+              <Badge variant="outline" className="flex items-center gap-1.5">
+                <MessageSquare className="w-3 h-3" />
+                {messages.filter(m => m.type === 'received').length} New Messages
+              </Badge>
+              <span className="text-muted-foreground ml-auto">
+                Updated: {new Date().toLocaleTimeString()}
               </span>
             </div>
           </div>
@@ -754,6 +972,36 @@ ${recruitingProfile.companyName} Team`
             </div>
           </div>
 
+          {/* Conversations Overview */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5" />
+                Conversation Overview
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="p-4 rounded-lg bg-muted/50 border border-border/50">
+                  <div className="text-sm text-muted-foreground mb-1">Active Conversations</div>
+                  <div className="text-3xl font-bold">{conversations.length}</div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    {conversations.length > 0 ? `Chatting with ${conversations.length} student${conversations.length !== 1 ? 's' : ''}` : 'No active chats'}
+                  </div>
+                </div>
+                <div className="p-4 rounded-lg bg-muted/50 border border-border/50">
+                  <div className="text-sm text-muted-foreground mb-1">Total Messages</div>
+                  <div className="text-3xl font-bold text-green-600">
+                    {messages.length}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    {messages.filter(m => m.type === 'sent').length} sent, {messages.filter(m => m.type === 'received').length} received
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Quick Actions */}
           <Card>
             <CardHeader>
@@ -797,40 +1045,6 @@ ${recruitingProfile.companyName} Team`
                   <span className="text-sm">Clear Filters</span>
                 </Button>
               </div>
-              
-              {/* Debug Actions */}
-              <div className="mt-4 pt-4 border-t border-border/50">
-                <p className="text-sm text-muted-foreground mb-2">Quick Debug Actions:</p>
-                <div className="flex gap-2 flex-wrap">
-                  <Button 
-                    onClick={() => {
-                      console.log('Current user:', currentUser);
-                      console.log('User profile:', userProfile);
-                      console.log('Recruiting profile:', recruitingProfile);
-                      console.log('Conversations:', conversations.length);
-                      console.log('Students sample:', students.slice(0, 2));
-                      toast.success('Debug info logged to console');
-                    }}
-                    variant="outline"
-                    size="sm"
-                  >
-                    Debug Info
-                  </Button>
-                  <Button 
-                    onClick={() => {
-                      setConversations([]);
-                      setTimeout(() => {
-                        console.log('Conversations should reload automatically');
-                        toast.success('Conversations refreshed');
-                      }, 100);
-                    }}
-                    variant="outline"
-                    size="sm"
-                  >
-                    Refresh Messages
-                  </Button>
-                </div>
-              </div>
             </CardContent>
           </Card>
 
@@ -864,46 +1078,74 @@ ${recruitingProfile.companyName} Team`
             </CardContent>
           </Card>
 
-          {/* Recent Messages */}
+          {/* Real-Time Conversations Activity */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <MessageSquare className="w-5 h-5" />
-                Recent Messages
+                Active Conversations ({conversations.length})
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {messages.length === 0 ? (
+              {conversations.length === 0 ? (
                 <div className="text-center py-8">
                   <MessageSquare className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground">No messages yet</p>
-                  <p className="text-sm text-muted-foreground">Start connecting with students to see your conversations here</p>
+                  <p className="text-muted-foreground">No active conversations yet</p>
+                  <p className="text-sm text-muted-foreground">Start connecting with students by using Find Students</p>
                 </div>
               ) : (
                 <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {messages.slice(-5).reverse().map(msg => (
-                    <div key={msg.id} className="p-4 border border-border/50 rounded-lg bg-muted/20">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <p className="font-medium">{msg.studentName}</p>
-                          <p className="text-sm text-muted-foreground">{msg.subject}</p>
+                  {conversations.map(conv => {
+                    const lastMessage = conversationMessages.find(m => m.conversationId === conv.id);
+                    const studentName = conv.participants.studentName || 'Student';
+                    const isUnread = conv.unreadCount && conv.unreadCount > 0;
+                    
+                    return (
+                      <div 
+                        key={conv.id}
+                        onClick={() => {
+                          setSelectedConversation(conv);
+                          setActiveSection("messages");
+                        }}
+                        className={`p-4 border border-border/50 rounded-lg cursor-pointer transition-colors ${
+                          selectedConversation?.id === conv.id 
+                            ? 'bg-primary/5 border-primary/50' 
+                            : 'bg-muted/20 hover:bg-muted/40'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold">
+                              {studentName.substring(0, 1).toUpperCase()}
+                            </div>
+                            <div>
+                              <p className={`font-medium ${isUnread ? 'font-bold' : ''}`}>
+                                {studentName}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {lastMessage 
+                                  ? new Date(lastMessage.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  : 'No messages'}
+                              </p>
+                            </div>
+                          </div>
+                          {isUnread && (
+                            <Badge variant="default" className="text-xs">
+                              {conv.unreadCount} new
+                            </Badge>
+                          )}
                         </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={msg.type === 'sent' ? 'default' : 'outline'}>
-                            {msg.type === 'sent' ? 'Sent' : 'Received'}
-                          </Badge>
-                          <span className="text-xs text-muted-foreground">
-                            {new Date(msg.timestamp).toLocaleDateString()}
-                          </span>
-                        </div>
+                        <p className="text-sm text-muted-foreground line-clamp-1">
+                          {lastMessage?.content || 'Start the conversation...'}
+                        </p>
                       </div>
-                      <p className="text-sm text-muted-foreground line-clamp-2">{msg.content}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>
           </Card>
+
         </div>
       </div>
     );
@@ -1470,9 +1712,19 @@ ${recruitingProfile.companyName} Team`
                                     <Button
                                       onClick={() => createConversationWithStudent(student)}
                                       className="w-full"
+                                      disabled={creatingChatFor === student.id}
                                     >
-                                      <MessageSquare className="w-4 h-4 mr-2" />
-                                      Start Conversation
+                                      {creatingChatFor === student.id ? (
+                                        <>
+                                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                          Starting Conversation...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <MessageSquare className="w-4 h-4 mr-2" />
+                                          Start Conversation
+                                        </>
+                                      )}
                                     </Button>
                                     
                                     <Button
@@ -1575,9 +1827,19 @@ ${recruitingProfile.companyName} Team`
                           size="sm" 
                           variant="outline"
                           onClick={() => createConversationWithStudent(student)}
+                          disabled={creatingChatFor === student.id}
                         >
-                          <MessageSquare className="w-4 h-4 mr-2" />
-                          Start Chat
+                          {creatingChatFor === student.id ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Starting Chat...
+                            </>
+                          ) : (
+                            <>
+                              <MessageSquare className="w-4 h-4 mr-2" />
+                              Start Chat
+                            </>
+                          )}
                         </Button>
                       </div>
                     </CardContent>

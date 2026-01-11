@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
 import { toast } from "sonner";
 import { 
   CheckCircle, 
@@ -250,11 +251,12 @@ const CareerRoadmap = () => {
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
+      <MobileBottomNav />
       
       <div className="lg:ml-64 transition-all duration-300">
         <DashboardHeader />
         
-        <main className="p-6">
+        <main className="p-6 pb-20 lg:pb-6">
           <div className="mb-8">
             <div className="flex items-center justify-between">
               <div>

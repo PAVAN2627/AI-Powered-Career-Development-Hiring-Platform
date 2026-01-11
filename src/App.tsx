@@ -13,6 +13,7 @@ import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import ResumeBuilder from "./pages/ResumeBuilder";
 import ATSAnalyzer from "./pages/ATSAnalyzer";
+import SimpleATSAnalyzer from "./pages/SimpleATSAnalyzer";
 import CareerRoadmap from "./pages/CareerRoadmap";
 import MockInterview from "./pages/MockInterview";
 import Opportunities from "./pages/Opportunities";
@@ -78,6 +79,11 @@ const AppRoutes = () => {
       <Route path="/ats-analyzer" element={
         <ProtectedRoute allowedRoles={['student']}>
           <ATSAnalyzer />
+        </ProtectedRoute>
+      } />
+      <Route path="/simple-ats" element={
+        <ProtectedRoute allowedRoles={['student']}>
+          <SimpleATSAnalyzer />
         </ProtectedRoute>
       } />
       <Route path="/mock-interview" element={

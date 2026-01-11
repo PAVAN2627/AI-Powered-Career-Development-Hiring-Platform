@@ -11,7 +11,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
-import { aiService, type ResumeAnalysisResult } from "@/lib/aiService";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
+import { enhancedATSService, type EnhancedATSResult } from "@/lib/enhancedATSService";
+import { simpleATSService } from "@/lib/simpleATSService";
+import { realtimeDataService } from "@/lib/realtimeDataService";
+import { learningPathService } from "@/lib/learningPathService";
 import { toast } from "sonner";
 import { 
   Upload, 
@@ -31,14 +35,15 @@ import {
   ArrowRight,
   Brain,
   Loader2,
-  Plus
+  Plus,
+  ExternalLink
 } from "lucide-react";
 
 const ATSAnalyzer = () => {
   const { userProfile } = useAuth();
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<ResumeAnalysisResult | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<EnhancedATSResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string>("");
   const [analysisHistory, setAnalysisHistory] = useState<any[]>([]);
   const [useTextInput, setUseTextInput] = useState(false);
@@ -72,7 +77,7 @@ const ATSAnalyzer = () => {
   }, [analysisResult, analysisHistory, userProfile?.uid, uploadedFile?.name]);
 
   // Save analysis results to user's career roadmap
-  const saveToRoadmap = async (result: ResumeAnalysisResult) => {
+  const saveToRoadmap = async (result: EnhancedATSResult) => {
     if (!userProfile?.uid) return;
     
     try {
@@ -87,256 +92,25 @@ const ATSAnalyzer = () => {
         userId: userProfile.uid,
         lastUpdated: new Date().toISOString(),
         resumeScore: result.overallScore,
-        bestMatchRole: result.bestMatch.role,
-        targetRoles: userProfile.targetRoles || [],
-        skillGaps: {},
-        learningPaths: {},
-        certifications: {},
+        bestMatchRole: result.bestMatches[0]?.role,
+        targetRoles: result.bestMatches.map(m => m.role),
+        extractedSkills: result.extractedSkills,
+        aiAnalysis: result.aiAnalysis,
+        learningPath: result.learningPath,
         progress: existingRoadmap.exists() ? existingRoadmap.data().progress || {} : {}
       };
 
-      // Organize learning paths by role
-      result.roleAnalysis.forEach(role => {
-        roadmapData.skillGaps[role.role] = role.missingSkills || [];
-        roadmapData.learningPaths[role.role] = result.learningPath.filter(course => 
-          course.title.toLowerCase().includes(role.role.toLowerCase()) ||
-          role.missingSkills?.some(skill => 
-            course.title.toLowerCase().includes(skill.toLowerCase())
-          )
-        );
-      });
-
-      // Add certifications for existing skills
-      const existingSkills = userProfile.skills || [];
-      existingSkills.forEach(skill => {
-        roadmapData.certifications[skill] = generateCertifications(skill);
-      });
-
       await setDoc(roadmapRef, roadmapData, { merge: true });
-      
-      toast.success("Roadmap Updated!", {
-        description: "Your learning path has been saved to Career Roadmap.",
-        duration: 3000,
-      });
     } catch (error) {
       console.error('Error saving to roadmap:', error);
     }
   };
 
-  // Generate certification recommendations for skills
-  const generateCertifications = (skill: string) => {
-    const certificationMap: { [key: string]: any[] } = {
-      "JavaScript": [
-        { name: "JavaScript Institute Certification", provider: "JavaScript Institute", url: "https://js.institute", difficulty: "Intermediate" },
-        { name: "Meta Frontend Developer Certificate", provider: "Coursera", url: "https://coursera.org", difficulty: "Beginner" }
-      ],
-      "React": [
-        { name: "React Developer Certification", provider: "Meta", url: "https://coursera.org", difficulty: "Intermediate" },
-        { name: "Advanced React Patterns", provider: "Udemy", url: "https://udemy.com", difficulty: "Advanced" }
-      ],
-      "Python": [
-        { name: "Python Institute PCAP", provider: "Python Institute", url: "https://pythoninstitute.org", difficulty: "Intermediate" },
-        { name: "Google IT Automation with Python", provider: "Coursera", url: "https://coursera.org", difficulty: "Beginner" }
-      ],
-      "AWS": [
-        { name: "AWS Certified Solutions Architect", provider: "Amazon", url: "https://aws.amazon.com/certification/", difficulty: "Advanced" },
-        { name: "AWS Cloud Practitioner", provider: "Amazon", url: "https://aws.amazon.com/certification/", difficulty: "Beginner" }
-      ],
-      "Docker": [
-        { name: "Docker Certified Associate", provider: "Docker", url: "https://docker.com", difficulty: "Intermediate" },
-        { name: "Kubernetes Administrator (CKA)", provider: "CNCF", url: "https://cncf.io", difficulty: "Advanced" }
-      ]
-    };
-
-    return certificationMap[skill] || [
-      { name: `${skill} Professional Certificate`, provider: "Industry Standard", url: "#", difficulty: "Intermediate" }
-    ];
-  };
-
-  // Mark course/certification as started or completed
-  const updateProgress = async (itemId: string, status: 'not_started' | 'in_progress' | 'completed') => {
-    if (!userProfile?.uid) return;
-    
-    try {
-      const { doc, updateDoc } = await import('firebase/firestore');
-      const { db } = await import('@/lib/firebase');
-      
-      const roadmapRef = doc(db, 'roadmaps', userProfile.uid);
-      await updateDoc(roadmapRef, {
-        [`progress.${itemId}`]: {
-          status,
-          updatedAt: new Date().toISOString()
-        }
-      });
-      
-      toast.success("Progress Updated!", {
-        description: `Marked as ${status.replace('_', ' ')}`,
-      });
-    } catch (error) {
-      console.error('Error updating progress:', error);
-    }
-  };
-
-  // Add course/certification to learning path
-  const addToLearningPath = async (role: string, resource: any, type: 'course' | 'certification') => {
-    if (!userProfile?.uid) return;
-    
-    try {
-      const { doc, updateDoc, arrayUnion } = await import('firebase/firestore');
-      const { db } = await import('@/lib/firebase');
-      
-      const roadmapRef = doc(db, 'roadmaps', userProfile.uid);
-      const learningItem = {
-        id: `${role}_${type}_${Date.now()}`,
-        role,
-        type,
-        title: resource.title,
-        provider: resource.provider,
-        url: resource.url,
-        duration: resource.duration,
-        addedAt: new Date().toISOString(),
-        status: 'not_started'
-      };
-      
-      await updateDoc(roadmapRef, {
-        [`learningPaths.${role}`]: arrayUnion(learningItem)
-      });
-      
-      toast.success("Added to Learning Path!", {
-        description: `${resource.title} has been added to your ${role} learning path`,
-      });
-      
-    } catch (error) {
-      console.error('Error adding to learning path:', error);
-      toast.error("Failed to add to learning path");
-    }
-  };
-
-  // Add entire role to learning path
-  const addRoleToLearningPath = async (role: any) => {
-    if (!userProfile?.uid) return;
-    
-    try {
-      const { doc, setDoc, getDoc } = await import('firebase/firestore');
-      const { db } = await import('@/lib/firebase');
-      
-      // Get existing roadmap
-      const roadmapRef = doc(db, 'roadmaps', userProfile.uid);
-      const existingRoadmap = await getDoc(roadmapRef);
-      
-      // Generate comprehensive learning materials for this role
-      const roleCourses = generateRoleBasedCourses(role);
-      const roleCertifications = generateRoleBasedCertifications(role);
-      
-      const roadmapData = {
-        userId: userProfile.uid,
-        resumeScore: analysisResult?.overallScore || 0,
-        bestMatchRole: role.role,
-        selectedRole: role.role,
-        targetRoles: [role.role],
-        extractedSkills: analysisResult?.extractedSkills || [],
-        skillGaps: { [role.role]: role.missingSkills || [] },
-        learningPaths: { [role.role]: roleCourses },
-        certifications: { [role.role]: roleCertifications },
-        progress: existingRoadmap.exists() ? existingRoadmap.data().progress || {} : {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      
-      await setDoc(roadmapRef, roadmapData);
-      
-      toast.success("Role Added to Learning Path!", {
-        description: `${role.role} learning materials have been added to your roadmap.`,
-        duration: 3000,
-      });
-      
-    } catch (error) {
-      console.error('Error adding role to learning path:', error);
-      toast.error("Failed to add role to learning path");
-    }
-  };
-
-  // Generate comprehensive courses for a role
-  const generateRoleBasedCourses = (role: any) => {
-    const allSkills = [...(role.missingSkills || []), ...(role.existingSkills || [])];
-    const courses: any[] = [];
-    
-    allSkills.forEach(skill => {
-      const skillCourses = getSkillCourses(skill);
-      courses.push(...skillCourses.map(course => ({
-        ...course,
-        skill,
-        priority: role.missingSkills?.includes(skill) ? 'high' : 'medium'
-      })));
-    });
-    
-    return courses;
-  };
-
-  // Generate comprehensive certifications for a role
-  const generateRoleBasedCertifications = (role: any) => {
-    const roleBasedCerts: { [key: string]: any[] } = {
-      "Frontend Developer": [
-        { name: "Meta Frontend Developer Certificate", provider: "Coursera", url: "https://coursera.org", difficulty: "Intermediate", priority: "high" },
-        { name: "Google UX Design Certificate", provider: "Coursera", url: "https://coursera.org", difficulty: "Beginner", priority: "medium" },
-        { name: "AWS Certified Cloud Practitioner", provider: "Amazon", url: "https://aws.amazon.com", difficulty: "Beginner", priority: "low" }
-      ],
-      "Full Stack Developer": [
-        { name: "Meta Full-Stack Engineer Certificate", provider: "Coursera", url: "https://coursera.org", difficulty: "Advanced", priority: "high" },
-        { name: "AWS Certified Developer", provider: "Amazon", url: "https://aws.amazon.com", difficulty: "Intermediate", priority: "high" },
-        { name: "MongoDB Certified Developer", provider: "MongoDB", url: "https://mongodb.com", difficulty: "Intermediate", priority: "medium" }
-      ],
-      "Backend Developer": [
-        { name: "AWS Certified Developer", provider: "Amazon", url: "https://aws.amazon.com", difficulty: "Intermediate", priority: "high" },
-        { name: "Docker Certified Associate", provider: "Docker", url: "https://docker.com", difficulty: "Intermediate", priority: "high" },
-        { name: "Kubernetes Administrator (CKA)", provider: "CNCF", url: "https://cncf.io", difficulty: "Advanced", priority: "medium" }
-      ],
-      "DevOps Engineer": [
-        { name: "AWS Certified DevOps Engineer", provider: "Amazon", url: "https://aws.amazon.com", difficulty: "Advanced", priority: "high" },
-        { name: "Docker Certified Associate", provider: "Docker", url: "https://docker.com", difficulty: "Intermediate", priority: "high" },
-        { name: "Kubernetes Administrator (CKA)", provider: "CNCF", url: "https://cncf.io", difficulty: "Advanced", priority: "high" },
-        { name: "Terraform Associate", provider: "HashiCorp", url: "https://hashicorp.com", difficulty: "Intermediate", priority: "medium" }
-      ],
-      "Data Scientist": [
-        { name: "Google Data Analytics Certificate", provider: "Coursera", url: "https://coursera.org", difficulty: "Beginner", priority: "high" },
-        { name: "AWS Certified Machine Learning", provider: "Amazon", url: "https://aws.amazon.com", difficulty: "Advanced", priority: "high" },
-        { name: "Microsoft Azure Data Scientist", provider: "Microsoft", url: "https://microsoft.com", difficulty: "Intermediate", priority: "medium" }
-      ]
-    };
-    
-    return roleBasedCerts[role.role] || [
-      { name: `${role.role} Professional Certificate`, provider: "Industry Standard", url: "#", difficulty: "Intermediate", priority: "medium" }
-    ];
-  };
-
-  // Get skill-specific courses
-  const getSkillCourses = (skill: string) => {
-    const skillCourses: { [key: string]: any[] } = {
-      "JavaScript": [
-        { title: "JavaScript Fundamentals", provider: "YouTube - Programming with Mosh", url: "https://youtube.com", duration: "3 hours" },
-        { title: "Modern JavaScript ES6+", provider: "freeCodeCamp", url: "https://freecodecamp.org", duration: "4 hours" }
-      ],
-      "React": [
-        { title: "React Hooks Complete Guide", provider: "YouTube - Code with Harry", url: "https://youtube.com", duration: "5 hours" },
-        { title: "React Projects Tutorial", provider: "YouTube - freeCodeCamp", url: "https://youtube.com", duration: "8 hours" }
-      ],
-      "TypeScript": [
-        { title: "TypeScript Complete Course", provider: "YouTube - Hitesh Choudhary", url: "https://youtube.com", duration: "4 hours" },
-        { title: "TypeScript with React", provider: "YouTube - Ben Awad", url: "https://youtube.com", duration: "3 hours" }
-      ],
-      "Node.js": [
-        { title: "Node.js Express Tutorial", provider: "YouTube - Traversy Media", url: "https://youtube.com", duration: "6 hours" },
-        { title: "Node.js API Development", provider: "YouTube - Programming with Mosh", url: "https://youtube.com", duration: "8 hours" }
-      ],
-      "Python": [
-        { title: "Python Complete Course", provider: "YouTube - Code with Harry", url: "https://youtube.com", duration: "12 hours" },
-        { title: "Python for Beginners", provider: "YouTube - Programming with Mosh", url: "https://youtube.com", duration: "6 hours" }
-      ]
-    };
-
-    return skillCourses[skill] || [
-      { title: `${skill} Complete Course`, provider: "YouTube", url: "https://youtube.com", duration: "4 hours" }
-    ];
+  // Get score color based on value
+  const getScoreColor = (score: number) => {
+    if (score >= 80) return 'text-success';
+    if (score >= 60) return 'text-accent';
+    return 'text-destructive';
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -375,7 +149,6 @@ const ATSAnalyzer = () => {
 
   const analyzeResume = async () => {
     let textToAnalyze = "";
-    let parsedDocument = null;
     
     if (useTextInput) {
       if (!resumeText.trim()) {
@@ -399,44 +172,27 @@ const ATSAnalyzer = () => {
     
     try {
       // Show progress toast
-      toast.info("AI Analysis Started", {
+      toast.info("Enhanced ATS Analysis Started", {
         description: useTextInput ? 
-          "Analyzing your pasted resume text with enhanced keyword extraction..." : 
-          "Extracting text and analyzing with enhanced keyword matching. This may take 30-60 seconds...",
-        duration: 5000,
+          "Analyzing your resume with AI-powered skill extraction and role matching..." : 
+          "Extracting text and performing comprehensive AI analysis. This may take 10-15 seconds...",
+        duration: 3000,
       });
 
-      // Get resume text and extract keywords
+      // Get resume text
       if (useTextInput) {
         textToAnalyze = resumeText;
       } else {
-        // Use enhanced document parser
-        const { documentParser } = await import('@/lib/documentParser');
-        
         try {
-          parsedDocument = await documentParser.parseDocument(uploadedFile!);
-          textToAnalyze = parsedDocument.text;
+          // Text extraction from file
+          textToAnalyze = await simpleATSService.extractTextFromFile(uploadedFile!);
           
-          // Analyze skills gap for each target role
-          const skillsGapAnalysis = userProfile?.targetRoles?.map(role => {
-            return documentParser.analyzeSkillsGap(parsedDocument.skills, role);
-          }) || [];
-          
-          // Store skills gap analysis for later use
-          (parsedDocument as any).skillsGapAnalysis = skillsGapAnalysis;
-          
-          toast.success("Enhanced Extraction Complete", {
-            description: `Extracted ${parsedDocument.keywords.length} keywords and ${parsedDocument.skills.length} skills from your ${parsedDocument.metadata.fileType}`,
-            duration: 3000,
+          toast.success("Text Extraction Complete", {
+            description: `Extracted ${textToAnalyze.length} characters from your resume.`,
+            duration: 2000,
           });
         } catch (parseError) {
-          toast.warning("Using Basic Extraction", {
-            description: "Enhanced parsing failed, using basic text extraction method.",
-            duration: 3000,
-          });
-          
-          // Fallback to basic extraction
-          textToAnalyze = await aiService.extractTextFromFile(uploadedFile!);
+          throw new Error('Failed to extract text from file. Please try a different file format or paste your resume text.');
         }
       }
       
@@ -444,92 +200,131 @@ const ATSAnalyzer = () => {
         throw new Error('Resume text is too short. Please provide more detailed resume content.');
       }
 
-      // Show extracted text length to user
-      if (!useTextInput) {
-        toast.info("Text Extracted Successfully", {
-          description: `Extracted ${textToAnalyze.length} characters from your resume. Sending to AI for analysis...`,
-          duration: 3000,
-        });
-      }
-
-      // Prepare enhanced analysis request
-      const analysisRequest = {
-        resumeText: textToAnalyze,
-        targetRoles: userProfile?.targetRoles || ["Frontend Developer"],
-        userSkills: userProfile?.skills || [],
-        // Include parsed document data if available
-        ...(parsedDocument && {
-          extractedKeywords: parsedDocument.keywords,
-          extractedSkills: parsedDocument.skills,
-          documentMetadata: parsedDocument.metadata
-        })
-      };
-
-      // Call AI service for analysis
-      const result = await aiService.analyzeResume(analysisRequest);
+      // Use ENHANCED ATS service with real AI analysis
+      const enhancedResult = await enhancedATSService.analyzeResume(textToAnalyze);
       
-      // Enhance result with parsed document data
-      if (parsedDocument) {
-        result.documentMetadata = parsedDocument.metadata;
-        result.enhancedKeywords = parsedDocument.keywords;
-        result.enhancedSkills = parsedDocument.skills;
-        
-        // Use the skills gap analysis we computed earlier
-        result.skillsGapAnalysis = (parsedDocument as any).skillsGapAnalysis || [];
+      // Verify result has required data
+      if (!enhancedResult || !enhancedResult.bestMatches || enhancedResult.bestMatches.length === 0) {
+        throw new Error('Analysis returned invalid data. Please try again.');
       }
       
-      // If no skills were extracted, show a warning but continue
-      if (!result.extractedSkills || result.extractedSkills.length === 0) {
-        toast.warning("Limited Skills Detected", {
-          description: "The AI couldn't extract many skills from your resume. This might affect the analysis accuracy.",
-          duration: 5000,
-        });
-      }
-      
-      setAnalysisResult(result);
+      setAnalysisResult(enhancedResult);
       
       // Add to analysis history
       const historyEntry = {
         id: Date.now(),
         timestamp: new Date().toISOString(),
         fileName: useTextInput ? 'Pasted Text' : uploadedFile!.name,
-        overallScore: result.overallScore,
-        bestMatch: result.bestMatch,
-        targetRoles: analysisRequest.targetRoles
+        overallScore: enhancedResult.overallScore,
+        bestMatches: enhancedResult.bestMatches.map(m => ({ role: m.role, score: m.score }))
       };
       setAnalysisHistory(prev => [historyEntry, ...prev.slice(0, 4)]); // Keep last 5 analyses
       
-      // Save learning path to user's roadmap in Firebase
-      await saveToRoadmap(result);
+      // Save analysis to Firebase if user is authenticated
+      if (userProfile?.uid) {
+        try {
+          // Save ATS analysis to real-time data service
+          await realtimeDataService.saveATSAnalysis({
+            userId: userProfile.uid,
+            overallScore: enhancedResult.overallScore,
+            skillsMatch: enhancedResult.bestMatches[0]?.score || 0,
+            experienceMatch: 75, // This would come from the analysis
+            educationMatch: 80,  // This would come from the analysis
+            keywordsFound: enhancedResult.extractedSkills.technical || [],
+            missingKeywords: enhancedResult.bestMatches[0]?.missingRequired || [],
+            suggestions: enhancedResult.aiAnalysis?.recommendations || [],
+            jobTitle: enhancedResult.bestMatches[0]?.role || 'Unknown',
+            timestamp: new Date(),
+            resumeText: textToAnalyze
+          });
+
+          // Generate and save learning path for the best matching role
+          if (enhancedResult.bestMatches[0]) {
+            const learningPath = learningPathService.generateLearningPath({
+              id: 'temp',
+              userId: userProfile.uid,
+              overallScore: enhancedResult.overallScore,
+              skillsMatch: enhancedResult.bestMatches[0]?.score || 0,
+              experienceMatch: 75,
+              educationMatch: 80,
+              keywordsFound: enhancedResult.extractedSkills.technical || [],
+              missingKeywords: enhancedResult.bestMatches[0]?.missingRequired || [],
+              suggestions: enhancedResult.aiAnalysis?.recommendations || [],
+              jobTitle: enhancedResult.bestMatches[0]?.role || 'Unknown',
+              timestamp: new Date()
+            }, enhancedResult.bestMatches[0].role);
+
+            await learningPathService.saveLearningPath(learningPath);
+
+            // Also save enhanced learning path data to roadmap
+            const { doc, setDoc } = await import('firebase/firestore');
+            const { db } = await import('@/lib/firebase');
+            
+            const roadmapRef = doc(db, 'roadmaps', userProfile.uid);
+            const roadmapData = {
+              userId: userProfile.uid,
+              lastUpdated: new Date().toISOString(),
+              resumeScore: enhancedResult.overallScore,
+              bestMatchRole: enhancedResult.bestMatches[0]?.role,
+              selectedRole: enhancedResult.bestMatches[0]?.role,
+              targetRoles: enhancedResult.bestMatches.map(m => m.role),
+              extractedSkills: enhancedResult.extractedSkills.technical || [],
+              aiAnalysis: enhancedResult.aiAnalysis,
+              skillGaps: {
+                [enhancedResult.bestMatches[0].role]: enhancedResult.bestMatches[0].missingRequired || []
+              },
+              learningPaths: {
+                [enhancedResult.bestMatches[0].role]: enhancedResult.learningPath.map(resource => ({
+                  skill: resource.skill,
+                  title: resource.courses[0]?.title || `Learn ${resource.skill}`,
+                  provider: resource.courses[0]?.platform || 'Various',
+                  url: resource.courses[0]?.url || '#',
+                  duration: resource.courses[0]?.duration || `${resource.estimatedHours} hours`,
+                  priority: resource.priority
+                }))
+              },
+              certifications: {
+                [enhancedResult.bestMatches[0].role]: enhancedResult.learningPath.map(resource => ({
+                  name: `${resource.skill} Professional Certificate`,
+                  provider: 'Industry Standard',
+                  url: '#',
+                  difficulty: 'intermediate',
+                  priority: resource.priority
+                }))
+              },
+              progress: {}
+            };
+
+            await setDoc(roadmapRef, roadmapData, { merge: true });
+          }
+
+          console.log('Analysis and learning path saved to Firebase');
+        } catch (error) {
+          console.error('Error saving to Firebase:', error);
+        }
+      }
       
       // Trigger dashboard refresh by dispatching a custom event
       window.dispatchEvent(new CustomEvent('roadmapUpdated'));
       
       // Show success toast
-      toast.success("AI Analysis Complete!", {
-        description: `Your resume scored ${result.overallScore}% ATS compatibility. Best match: ${result.bestMatch.role} (${result.bestMatch.score}%)${
-          result.enhancedKeywords ? ` • Enhanced parsing extracted ${result.enhancedKeywords.length} keywords` : ''
-        }`,
-        duration: 8000,
+      toast.success("ATS Analysis Complete!", {
+        description: `Overall Score: ${enhancedResult.overallScore}% | Best Match: ${enhancedResult.bestMatches[0]?.role} (${enhancedResult.bestMatches[0]?.score}%) | Skills: ${enhancedResult.extractedSkills.technical.length}`,
+        duration: 6000,
       });
       
     } catch (error: any) {
+      console.error('ATS Analysis Error:', error);
       const errorMessage = error.message || "Analysis failed. Please try again.";
       setAnalysisError(errorMessage);
       
       toast.error("Analysis Failed", {
-        description: errorMessage,
+        description: errorMessage + (process.env.NODE_ENV === 'development' ? ` [${error?.toString()}]` : ''),
         duration: 8000,
       });
     } finally {
       setAnalyzing(false);
     }
-  };
-
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-success';
-    if (score >= 60) return 'text-accent';
-    return 'text-destructive';
   };
 
   const getStatusIcon = (status: string) => {
@@ -544,11 +339,12 @@ const ATSAnalyzer = () => {
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
+      <MobileBottomNav />
       
       <div className="lg:ml-64 transition-all duration-300">
         <DashboardHeader />
         
-        <main className="p-6">
+        <main className="p-6 pb-20 lg:pb-6">
           <div className="mb-8">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-foreground mb-2">
               ATS Resume Analyzer
@@ -781,7 +577,7 @@ Tools: Git, Docker, AWS, JIRA"
                             <p className="font-medium text-sm">{entry.fileName}</p>
                             <p className="text-xs text-muted-foreground">
                               {new Date(entry.timestamp).toLocaleDateString()} • 
-                              Best: {entry.bestMatch.role} ({entry.bestMatch.score}%)
+                              Best: {entry.bestMatches?.[0]?.role || 'N/A'} ({entry.bestMatches?.[0]?.score || 0}%)
                             </p>
                           </div>
                         </div>
@@ -877,26 +673,26 @@ Tools: Git, Docker, AWS, JIRA"
                             <Star className="w-5 h-5 text-accent" />
                             <h3 className="font-semibold">Best Match</h3>
                           </div>
-                          <p className="font-medium text-lg">{analysisResult.bestMatch.role}</p>
+                          <p className="font-medium text-lg">{analysisResult.bestMatches[0]?.role}</p>
                           <Badge variant="default" className="mt-2">
-                            {analysisResult.bestMatch.score}% Match
+                            {analysisResult.bestMatches[0]?.score}% Match
                           </Badge>
                         </div>
 
-                        {/* Your Top Target */}
+                        {/* Second Best Match */}
                         <div className="p-4 border rounded-lg">
-                          <h3 className="font-semibold mb-2">Your Top Target</h3>
-                          <p className="font-medium text-lg">{analysisResult.roleAnalysis[0]?.role}</p>
-                          <Badge variant={analysisResult.roleAnalysis[0]?.score >= 70 ? "default" : "secondary"} className="mt-2">
-                            {analysisResult.roleAnalysis[0]?.score}% Match
+                          <h3 className="font-semibold mb-2">Second Best</h3>
+                          <p className="font-medium text-lg">{analysisResult.bestMatches[1]?.role || 'N/A'}</p>
+                          <Badge variant={analysisResult.bestMatches[1]?.score >= 70 ? "default" : "secondary"} className="mt-2">
+                            {analysisResult.bestMatches[1]?.score || 0}% Match
                           </Badge>
                         </div>
 
                         {/* Skills Found */}
                         <div className="p-4 border rounded-lg">
                           <h3 className="font-semibold mb-2">Skills Detected</h3>
-                          <p className="text-2xl font-bold text-primary">{analysisResult.extractedSkills.length}</p>
-                          <p className="text-sm text-muted-foreground">From your resume</p>
+                          <p className="text-2xl font-bold text-primary">{(analysisResult.extractedSkills.technical?.length || 0) + (analysisResult.extractedSkills.softSkills?.length || 0) + (analysisResult.extractedSkills.tools?.length || 0) + (analysisResult.extractedSkills.languages?.length || 0)}</p>
+                          <p className="text-sm text-muted-foreground">Total extracted skills</p>
                         </div>
                       </div>
 
@@ -920,83 +716,65 @@ Tools: Git, Docker, AWS, JIRA"
                     </TabsList>
 
                     <TabsContent value="roles" className="space-y-6">
-                      {/* Your Target Roles Analysis */}
+                      {/* Best Matches Analysis */}
                       <Card>
                         <CardHeader>
                           <CardTitle className="flex items-center gap-2">
                             <Target className="w-5 h-5" />
-                            Your Target Roles Analysis
+                            Top 3 Role Matches
                           </CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                          {analysisResult.roleAnalysis.map((role: any, index: number) => (
-                            <div key={index} className="p-4 border rounded-lg">
+                          {analysisResult.bestMatches?.map((role: any, index: number) => (
+                            <div key={index} className={`p-4 border rounded-lg ${
+                              index === 0 ? 'bg-accent/5 border-accent' : 'bg-muted/30'
+                            }`}>
                               <div className="flex items-center justify-between mb-3">
-                                <h4 className="font-semibold text-lg">{role.role}</h4>
-                                <Badge variant={role.score >= 70 ? "default" : role.score >= 50 ? "secondary" : "destructive"} className="text-lg px-3 py-1">
-                                  {role.score}% Match
+                                <div className="flex items-center gap-3">
+                                  {index === 0 && <Star className="w-5 h-5 text-accent" />}
+                                  <div>
+                                    <h4 className="font-semibold text-lg">{role.role}</h4>
+                                    <p className="text-xs text-muted-foreground">
+                                      Match: {role.matchedRequired?.length || 0} of {role.matchedRequired?.length + role.missingRequired?.length || 0} required skills
+                                    </p>
+                                  </div>
+                                </div>
+                                <Badge variant={role.score >= 80 ? "default" : role.score >= 60 ? "secondary" : "outline"} className="text-lg px-3 py-1">
+                                  {role.score}%
                                 </Badge>
                               </div>
-                              <Progress value={role.score} className="h-3 mb-4" />
+                              <Progress value={role.score} className="h-3 mb-3" />
                               
-                              {/* Detailed Match Breakdown */}
-                              <div className="grid md:grid-cols-2 gap-4 mb-4">
-                                <div className="space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-sm font-medium">Required Skills</span>
-                                    <span className="text-sm text-muted-foreground">
-                                      {role.requiredMatched}/{role.totalRequired}
-                                    </span>
-                                  </div>
-                                  <Progress value={(role.requiredMatched / role.totalRequired) * 100} className="h-2" />
-                                </div>
-                                <div className="space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-sm font-medium">Preferred Skills</span>
-                                    <span className="text-sm text-muted-foreground">
-                                      {role.preferredMatched}/{role.totalPreferred}
-                                    </span>
-                                  </div>
-                                  <Progress value={(role.preferredMatched / role.totalPreferred) * 100} className="h-2" />
-                                </div>
-                              </div>
-
-                              {/* Matched Skills with Details */}
-                              {role.matchDetails && role.matchDetails.length > 0 && (
-                                <div className="mb-4">
-                                  <h5 className="font-medium mb-2 text-success">✅ Matched Skills ({role.matchedSkills.length})</h5>
-                                  <div className="space-y-2">
-                                    {role.matchDetails.map((match: any, idx: number) => (
-                                      <div key={idx} className="flex items-center justify-between p-2 bg-success/5 rounded border border-success/20">
-                                        <div className="flex items-center gap-2">
-                                          <Badge variant={match.category === 'required' ? 'default' : 'secondary'} className="text-xs">
-                                            {match.category}
-                                          </Badge>
-                                          <span className="font-medium text-sm">{match.skill}</span>
-                                        </div>
-                                        <div className="flex flex-wrap gap-1">
-                                          {match.found.map((found: string) => (
-                                            <Badge key={found} variant="outline" className="text-xs bg-success/10 text-success border-success/30">
-                                              {found}
-                                            </Badge>
-                                          ))}
-                                        </div>
-                                      </div>
+                              {/* Matched Skills */}
+                              {role.matchedRequired && role.matchedRequired.length > 0 && (
+                                <div className="mb-3">
+                                  <h5 className="text-sm font-medium text-success mb-2">✅ Matched Skills ({role.matchedRequired.length})</h5>
+                                  <div className="flex flex-wrap gap-2">
+                                    {role.matchedRequired.slice(0, 8).map((skill: string) => (
+                                      <Badge key={skill} variant="outline" className="bg-success/10 text-success border-success/30">
+                                        {skill}
+                                      </Badge>
                                     ))}
+                                    {role.matchedRequired.length > 8 && (
+                                      <Badge variant="outline">+{role.matchedRequired.length - 8}</Badge>
+                                    )}
                                   </div>
                                 </div>
                               )}
 
                               {/* Missing Skills */}
-                              {role.missingSkills && role.missingSkills.length > 0 && (
+                              {role.missingRequired && role.missingRequired.length > 0 && (
                                 <div>
-                                  <h5 className="font-medium mb-2 text-destructive">❌ Missing Required Skills ({role.missingSkills.length})</h5>
+                                  <h5 className="text-sm font-medium text-destructive mb-2">❌ Missing Skills ({role.missingRequired.length})</h5>
                                   <div className="flex flex-wrap gap-2">
-                                    {role.missingSkills.map((skill: string) => (
+                                    {role.missingRequired.slice(0, 5).map((skill: string) => (
                                       <Badge key={skill} variant="outline" className="border-destructive text-destructive">
                                         {skill}
                                       </Badge>
                                     ))}
+                                    {role.missingRequired.length > 5 && (
+                                      <Badge variant="outline">+{role.missingRequired.length - 5}</Badge>
+                                    )}
                                   </div>
                                 </div>
                               )}
@@ -1005,73 +783,89 @@ Tools: Git, Docker, AWS, JIRA"
                         </CardContent>
                       </Card>
 
-                      {/* Best Role Matches */}
+                      {/* All Roles Score Ranking */}
                       <Card>
                         <CardHeader>
                           <CardTitle className="flex items-center gap-2">
-                            <Star className="w-5 h-5 text-accent" />
-                            Best Role Matches for Your Resume
+                            <TrendingUp className="w-5 h-5" />
+                            All Role Scores
                           </CardTitle>
                         </CardHeader>
                         <CardContent>
                           <div className="space-y-3">
-                            {analysisResult.allRoleAnalysis.map((role: any, index: number) => (
-                              <div key={index} className={`p-3 rounded-lg border ${
-                                index === 0 ? 'bg-accent/5 border-accent' : 'bg-muted/30'
-                              }`}>
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-3">
-                                    {index === 0 && <Star className="w-4 h-4 text-accent" />}
-                                    <div>
-                                      <h4 className="font-medium">{role.role}</h4>
-                                      <p className="text-xs text-muted-foreground">
-                                        {role.requiredMatched}/{role.totalRequired} required • {role.preferredMatched}/{role.totalPreferred} preferred
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="text-right">
-                                    <Badge variant={role.score >= 70 ? "default" : role.score >= 50 ? "secondary" : "outline"}>
-                                      {role.score}%
-                                    </Badge>
-                                    {index === 0 && (
-                                      <p className="text-xs text-accent font-medium mt-1">Best Match</p>
-                                    )}
-                                  </div>
+                            {analysisResult.roleMatches?.slice(0, 10).map((role: any, index: number) => (
+                              <div key={index} className="p-3 rounded-lg border bg-muted/30">
+                                <div className="flex items-center justify-between mb-2">
+                                  <h4 className="font-medium">{index + 1}. {role.role}</h4>
+                                  <Badge variant={role.score >= 80 ? "default" : role.score >= 60 ? "secondary" : "outline"}>
+                                    {role.score}%
+                                  </Badge>
                                 </div>
+                                <Progress value={role.score} className="h-2" />
                               </div>
                             ))}
                           </div>
-                          
-                          {analysisResult.suggestedRole && (
-                            <Alert className="mt-4">
-                              <Lightbulb className="h-4 w-4" />
-                              <AlertDescription>
-                                <strong>Recommendation:</strong> Consider exploring <strong>{analysisResult.bestMatch.role}</strong> - 
-                                you have a {analysisResult.bestMatch.score}% match! This role might be a better fit than your current targets.
-                              </AlertDescription>
-                            </Alert>
-                          )}
                         </CardContent>
                       </Card>
                     </TabsContent>
 
                     <TabsContent value="sections" className="space-y-4">
-                      {Object.entries(analysisResult.sections).map(([section, data]: [string, any]) => (
-                        <Card key={section}>
-                          <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-2">
-                                {getStatusIcon(data.status)}
-                                <h3 className="font-semibold capitalize">{section.replace(/([A-Z])/g, ' $1')}</h3>
+                      <Card>
+                        <CardHeader>
+                          <CardTitle>Extracted Skills Summary</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          {analysisResult.extractedSkills?.technical && analysisResult.extractedSkills.technical.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-2">Technical Skills ({analysisResult.extractedSkills.technical.length})</h4>
+                              <div className="flex flex-wrap gap-2">
+                                {analysisResult.extractedSkills.technical.map((skill: string) => (
+                                  <Badge key={skill} variant="default">{skill}</Badge>
+                                ))}
                               </div>
-                              <Badge variant="outline" className={getScoreColor(data.score)}>
-                                {data.score}%
-                              </Badge>
                             </div>
-                            <p className="text-sm text-muted-foreground">{data.feedback}</p>
-                          </CardContent>
-                        </Card>
-                      ))}
+                          )}
+                          {analysisResult.extractedSkills?.softSkills && analysisResult.extractedSkills.softSkills.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-2">Soft Skills ({analysisResult.extractedSkills.softSkills.length})</h4>
+                              <div className="flex flex-wrap gap-2">
+                                {analysisResult.extractedSkills.softSkills.map((skill: string) => (
+                                  <Badge key={skill} variant="secondary">{skill}</Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {analysisResult.extractedSkills?.tools && analysisResult.extractedSkills.tools.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-2">Tools & Platforms ({analysisResult.extractedSkills.tools.length})</h4>
+                              <div className="flex flex-wrap gap-2">
+                                {analysisResult.extractedSkills.tools.map((tool: string) => (
+                                  <Badge key={tool} variant="outline">{tool}</Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {analysisResult.extractedSkills?.languages && analysisResult.extractedSkills.languages.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-2">Programming Languages ({analysisResult.extractedSkills.languages.length})</h4>
+                              <div className="flex flex-wrap gap-2">
+                                {analysisResult.extractedSkills.languages.map((lang: string) => (
+                                  <Badge key={lang} variant="outline">{lang}</Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {analysisResult.extractedSkills?.experience && (
+                            <div className="border-t pt-4">
+                              <h4 className="font-semibold mb-2">Experience</h4>
+                              <p className="text-sm"><strong>Years:</strong> {analysisResult.extractedSkills.experience.yearsTotal}+</p>
+                              {analysisResult.extractedSkills.experience.roles.length > 0 && (
+                                <p className="text-sm"><strong>Roles:</strong> {analysisResult.extractedSkills.experience.roles.join(', ')}</p>
+                              )}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
                     </TabsContent>
 
                     <TabsContent value="strengths" className="space-y-4">
@@ -1079,17 +873,19 @@ Tools: Git, Docker, AWS, JIRA"
                         <CardHeader>
                           <CardTitle className="flex items-center gap-2 text-success">
                             <CheckCircle className="w-5 h-5" />
-                            Resume Strengths
+                            Your Strengths
                           </CardTitle>
                         </CardHeader>
                         <CardContent>
                           <ul className="space-y-2">
-                            {analysisResult.strengths.map((strength: string, index: number) => (
+                            {analysisResult.aiAnalysis?.strengths?.map((strength: string, index: number) => (
                               <li key={index} className="flex items-start gap-2">
                                 <CheckCircle className="w-4 h-4 text-success mt-0.5 flex-shrink-0" />
                                 <span className="text-sm">{strength}</span>
                               </li>
-                            ))}
+                            )) || (
+                              <li className="text-sm text-muted-foreground">No specific strengths identified. Continue building your skills!</li>
+                            )}
                           </ul>
                         </CardContent>
                       </Card>
@@ -1103,28 +899,37 @@ Tools: Git, Docker, AWS, JIRA"
                             Areas for Improvement
                           </CardTitle>
                         </CardHeader>
-                        <CardContent>
-                          <ul className="space-y-2 mb-6">
-                            {analysisResult.weaknesses.map((weakness: string, index: number) => (
-                              <li key={index} className="flex items-start gap-2">
-                                <AlertTriangle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
-                                <span className="text-sm">{weakness}</span>
-                              </li>
-                            ))}
-                          </ul>
-                          
+                        <CardContent className="space-y-4">
+                          <div>
+                            <h4 className="font-semibold mb-2 flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4" />
+                              Top Skill Gaps
+                            </h4>
+                            <div className="space-y-2">
+                              {analysisResult.aiAnalysis?.topSkillGaps?.slice(0, 5).map((gap: string, index: number) => (
+                                <div key={index} className="flex items-start gap-2">
+                                  <Badge variant="outline" className="border-destructive text-destructive mt-0.5">{index + 1}</Badge>
+                                  <span className="text-sm">{gap}</span>
+                                </div>
+                              )) || (
+                                <p className="text-sm text-muted-foreground">Great! Your skills are well-rounded.</p>
+                              )}
+                            </div>
+                          </div>
                           <div className="border-t pt-4">
-                            <h4 className="font-semibold mb-3 flex items-center gap-2">
-                              <Zap className="w-4 h-4 text-accent" />
-                              Improvement Suggestions
+                            <h4 className="font-semibold mb-2 flex items-center gap-2">
+                              <Lightbulb className="w-4 h-4 text-accent" />
+                              Recommendations
                             </h4>
                             <ul className="space-y-2">
-                              {analysisResult.suggestions.map((suggestion: string, index: number) => (
+                              {analysisResult.aiAnalysis?.recommendations?.map((rec: string, index: number) => (
                                 <li key={index} className="flex items-start gap-2">
-                                  <Zap className="w-4 h-4 text-accent mt-0.5 flex-shrink-0" />
-                                  <span className="text-sm">{suggestion}</span>
+                                  <Lightbulb className="w-4 h-4 text-accent mt-0.5 flex-shrink-0" />
+                                  <span className="text-sm">{rec}</span>
                                 </li>
-                              ))}
+                              )) || (
+                                <li className="text-sm text-muted-foreground">No recommendations at this time.</li>
+                              )}
                             </ul>
                           </div>
                         </CardContent>
@@ -1132,225 +937,30 @@ Tools: Git, Docker, AWS, JIRA"
                     </TabsContent>
 
                     <TabsContent value="keywords" className="space-y-4">
-                      {/* Enhanced Document Analysis Status */}
-                      {analysisResult.documentMetadata && (
-                        <Alert className="border-green-200 bg-green-50">
-                          <CheckCircle className="h-4 w-4 text-green-600" />
-                          <AlertDescription>
-                            <strong>Enhanced Document Analysis Complete!</strong> 
-                            <br />• File type: {analysisResult.documentMetadata.fileType} ({analysisResult.documentMetadata.extractionMethod})
-                            <br />• Document length: {analysisResult.documentMetadata.wordCount} words
-                            {analysisResult.documentMetadata.pageCount && <span> • Pages: {analysisResult.documentMetadata.pageCount}</span>}
-                            <br />• Enhanced keywords extracted: {analysisResult.enhancedKeywords?.length || 0}
-                            <br />• Technical skills identified: {analysisResult.enhancedSkills?.length || 0}
-                          </AlertDescription>
-                        </Alert>
-                      )}
-
-                      {/* Enhanced Keywords Section */}
-                      {analysisResult.enhancedKeywords && analysisResult.enhancedKeywords.length > 0 && (
-                        <Card className="border-accent">
-                          <CardHeader>
-                            <CardTitle className="text-accent flex items-center gap-2">
-                              <Zap className="w-5 h-5" />
-                              Enhanced Keywords Extracted ({analysisResult.enhancedKeywords.length})
-                            </CardTitle>
-                            <p className="text-sm text-muted-foreground">
-                              Advanced document parsing found these keywords and skills in your resume
-                            </p>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="flex flex-wrap gap-2">
-                              {analysisResult.enhancedKeywords.map((keyword: string) => (
-                                <Badge key={keyword} variant="default" className="bg-accent/80 text-white">
-                                  {keyword}
-                                </Badge>
-                              ))}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      {/* Skills Gap Analysis */}
-                      {analysisResult.skillsGapAnalysis && analysisResult.skillsGapAnalysis.length > 0 && (
-                        <Card className="border-primary">
-                          <CardHeader>
-                            <CardTitle className="text-primary flex items-center gap-2">
-                              <Target className="w-5 h-5" />
-                              Skills Gap Analysis
-                            </CardTitle>
-                            <p className="text-sm text-muted-foreground">
-                              Detailed analysis of your skills vs. target role requirements
-                            </p>
-                          </CardHeader>
-                          <CardContent className="space-y-4">
-                            {analysisResult.skillsGapAnalysis.map((analysis: any, index: number) => (
-                              <div key={index} className="p-4 border rounded-lg bg-gradient-to-r from-blue-50 to-purple-50">
-                                <div className="flex items-center justify-between mb-3">
-                                  <h4 className="font-semibold">Target Role Analysis</h4>
-                                  <Badge variant="default" className="bg-primary">
-                                    {analysis.matchPercentage}% Match
-                                  </Badge>
-                                </div>
-                                
-                                <div className="grid md:grid-cols-2 gap-4 mb-4">
-                                  <div>
-                                    <h5 className="font-medium text-success mb-2">✅ Matching Skills ({analysis.matchingSkills.length})</h5>
-                                    <div className="flex flex-wrap gap-1">
-                                      {analysis.matchingSkills.map((skill: string) => (
-                                        <Badge key={skill} variant="secondary" className="bg-success/10 text-success text-xs">
-                                          {skill}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  </div>
-                                  
-                                  <div>
-                                    <h5 className="font-medium text-destructive mb-2">❌ Missing Skills ({analysis.missingSkills.length})</h5>
-                                    <div className="flex flex-wrap gap-1">
-                                      {analysis.missingSkills.map((skill: string) => (
-                                        <Badge key={skill} variant="outline" className="border-destructive text-destructive text-xs">
-                                          {skill}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {analysis.recommendations && analysis.recommendations.length > 0 && (
-                                  <div>
-                                    <h5 className="font-medium mb-2 flex items-center gap-2">
-                                      <Lightbulb className="w-4 h-4 text-accent" />
-                                      Recommendations
-                                    </h5>
-                                    <ul className="space-y-1">
-                                      {analysis.recommendations.map((rec: string, recIndex: number) => (
-                                        <li key={recIndex} className="text-sm text-muted-foreground flex items-start gap-2">
-                                          <ArrowRight className="w-3 h-3 mt-0.5 text-accent flex-shrink-0" />
-                                          {rec}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      <div className="grid md:grid-cols-2 gap-6">
-                        <Card>
-                          <CardHeader>
-                            <CardTitle className="text-success flex items-center gap-2">
-                              <CheckCircle className="w-5 h-5" />
-                              Found Keywords ({analysisResult.keywordAnalysis.found.length})
-                            </CardTitle>
-                            <p className="text-sm text-muted-foreground">
-                              Skills from your resume that match your target roles
-                            </p>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="flex flex-wrap gap-2">
-                              {analysisResult.keywordAnalysis.found.map((keyword: string) => (
-                                <Badge key={keyword} variant="secondary" className="bg-success/10 text-success">
-                                  {keyword}
-                                </Badge>
-                              ))}
-                            </div>
-                            {analysisResult.keywordAnalysis.found.length === 0 && (
-                              <p className="text-sm text-muted-foreground italic">
-                                No matching keywords found between your resume and target roles.
-                              </p>
-                            )}
-                          </CardContent>
-                        </Card>
-
-                        <Card>
-                          <CardHeader>
-                            <CardTitle className="text-destructive flex items-center gap-2">
-                              <XCircle className="w-5 h-5" />
-                              Missing Keywords ({analysisResult.keywordAnalysis.missing.length})
-                            </CardTitle>
-                            <p className="text-sm text-muted-foreground">
-                              Important skills for your target roles that are missing from your resume
-                            </p>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="flex flex-wrap gap-2">
-                              {analysisResult.keywordAnalysis.missing.map((keyword: string) => (
-                                <Badge key={keyword} variant="outline" className="border-destructive text-destructive">
-                                  {keyword}
-                                </Badge>
-                              ))}
-                            </div>
-                            <p className="text-sm text-muted-foreground mt-3">
-                              Consider adding these keywords to improve ATS compatibility for your target roles
-                            </p>
-                          </CardContent>
-                        </Card>
-                      </div>
-
                       <Card>
                         <CardHeader>
-                          <CardTitle>Keyword Density Analysis</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="flex items-center gap-4">
-                            <div className="flex-1">
-                              <div className="flex justify-between text-sm mb-2">
-                                <span>Current Density</span>
-                                <span>{analysisResult.keywordAnalysis.density}%</span>
-                              </div>
-                              <Progress value={Math.min(analysisResult.keywordAnalysis.density * 2.5, 100)} className="h-2" />
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Target: 40-60%
-                            </div>
-                          </div>
-                          <p className="text-sm text-muted-foreground mt-3">
-                            Keyword density shows what percentage of important skills for your target roles are present in your resume.
-                          </p>
-                        </CardContent>
-                      </Card>
-
-                      {/* All Extracted Skills */}
-                      <Card className="border-dashed border-accent">
-                        <CardHeader>
-                          <CardTitle className="text-sm flex items-center gap-2">
-                            <Zap className="w-4 h-4 text-accent" />
-                            All Technical Skills Detected ({analysisResult.extractedSkills.length})
+                          <CardTitle className="flex items-center gap-2">
+                            <Zap className="w-5 h-5 text-accent" />
+                            Career Path & Level
                           </CardTitle>
-                          <p className="text-xs text-muted-foreground mt-2">
-                            These are all the technical skills, frameworks, tools, and platforms found in your resume. 
-                            <br />If skills are missing, ensure they are clearly mentioned in your document.
-                          </p>
                         </CardHeader>
-                        <CardContent className="space-y-3">
-                          {analysisResult.extractedSkills.length > 0 ? (
-                            <>
-                              <div className="flex flex-wrap gap-2">
-                                {analysisResult.extractedSkills.map((skill: string) => (
-                                  <Badge key={skill} variant="default" className="text-xs bg-accent/80">
-                                    {skill}
-                                  </Badge>
-                                ))}
-                              </div>
-                            </>
-                          ) : (
-                            <div className="p-4 bg-destructive/5 border border-destructive/20 rounded-lg space-y-2">
-                              <p className="text-sm text-destructive font-medium">⚠️ No skills detected in your resume</p>
-                              <p className="text-xs text-muted-foreground">
-                                This might indicate:
-                              </p>
-                              <ul className="text-xs text-muted-foreground list-disc list-inside space-y-1">
-                                <li>PDF/document extraction issue - try a Word document (.docx)</li>
-                                <li>Skills not clearly mentioned - use proper formatting for skill sections</li>
-                                <li>Skills written in unusual format - try standard skill names</li>
-                                <li>File corruption - try uploading the file again</li>
-                              </ul>
-                            </div>
-                          )}
+                        <CardContent className="space-y-4">
+                          <div className="p-4 bg-muted/50 rounded-lg">
+                            <h4 className="font-semibold mb-2">Estimated Career Level</h4>
+                            <Badge className="text-base px-3 py-1">
+                              {analysisResult.aiAnalysis?.estimatedLevel?.toUpperCase() || 'MID-LEVEL'}
+                            </Badge>
+                          </div>
+                          <div className="p-4 bg-muted/50 rounded-lg">
+                            <h4 className="font-semibold mb-2">Career Path</h4>
+                            <p className="text-sm">{analysisResult.aiAnalysis?.careerPath || 'Build specialized expertise in your preferred technology area'}</p>
+                          </div>
+                          <Alert>
+                            <Brain className="h-4 w-4" />
+                            <AlertDescription>
+                              This assessment is powered by AI (GPT-4). Your estimated level and career recommendations are based on your resume content and extracted skills.
+                            </AlertDescription>
+                          </Alert>
                         </CardContent>
                       </Card>
                     </TabsContent>
@@ -1360,126 +970,190 @@ Tools: Git, Docker, AWS, JIRA"
                         <CardHeader>
                           <CardTitle className="flex items-center gap-2">
                             <BookOpen className="w-5 h-5 text-primary" />
-                            Personalized Learning Path
+                            AI-Powered Learning Path
                             <Button variant="outline" size="sm" className="ml-auto" asChild>
                               <Link to="/dashboard/roadmap?tab=courses">
                                 <ArrowRight className="w-4 h-4 mr-1" />
-                                View Learning Path
+                                View Full Roadmap
                               </Link>
                             </Button>
                           </CardTitle>
                         </CardHeader>
                         <CardContent>
                           <p className="text-sm text-muted-foreground mb-6">
-                            Based on your resume analysis and target roles, here are recommended courses and certifications. 
-                            Progress is automatically saved to your Career Roadmap.
+                            Personalized learning resources based on your skill gaps and target roles. Each course recommendation includes multiple platforms and difficulty levels.
                           </p>
                           
-                          {/* Role-wise Learning Paths */}
-                          <div className="space-y-6">
-                            {analysisResult.roleAnalysis.map((role: any, roleIndex: number) => (
-                              <div key={roleIndex} className="border rounded-lg p-6 bg-gradient-to-r from-blue-50 to-purple-50">
-                                <div className="flex items-center justify-between mb-4">
-                                  <div className="flex items-center gap-3">
-                                    <Target className="w-6 h-6 text-primary" />
-                                    <div>
-                                      <h3 className="font-semibold text-lg">{role.role}</h3>
-                                      <p className="text-sm text-muted-foreground">
-                                        {role.missingSkills?.length || 0} skills to learn • {generateRoleBasedCourses(role).length} courses • {generateRoleBasedCertifications(role).length} certifications
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <Badge variant={role.score >= 70 ? "default" : "secondary"} className="text-sm px-3 py-1">
-                                      {role.score}% Match
-                                    </Badge>
-                                    <Button 
-                                      onClick={() => addRoleToLearningPath(role)}
-                                      className="bg-primary hover:bg-primary/90"
-                                    >
-                                      <Plus className="w-4 h-4 mr-2" />
-                                      Select & Add to Learning Path
-                                    </Button>
-                                  </div>
-                                </div>
+                          {/* Missing Skills Learning Path */}
+                          {analysisResult.bestMatches[0]?.missingRequired && analysisResult.bestMatches[0].missingRequired.length > 0 ? (
+                            <div className="space-y-6">
+                              <Alert className="border-blue-200 bg-blue-50">
+                                <Brain className="h-4 w-4" />
+                                <AlertDescription>
+                                  <strong>Personalized for {analysisResult.bestMatches[0].role}</strong>
+                                  <br />
+                                  Based on your ATS analysis, here are the critical skills you need to develop to become job-ready for this role.
+                                </AlertDescription>
+                              </Alert>
 
-                                {/* Skill Gaps Preview */}
-                                {role.missingSkills && role.missingSkills.length > 0 && (
-                                  <div className="mb-4">
-                                    <h4 className="font-medium text-sm mb-2 text-destructive">
-                                      🎯 Skills to Learn ({role.missingSkills.length})
-                                    </h4>
-                                    <div className="flex flex-wrap gap-2">
-                                      {role.missingSkills.slice(0, 6).map((skill: string) => (
-                                        <Badge key={skill} variant="outline" className="border-destructive text-destructive">
-                                          {skill}
+                              {/* Critical Skills Section */}
+                              <div className="space-y-4">
+                                <h3 className="font-semibold text-lg flex items-center gap-2">
+                                  🔥 Critical Skills ({analysisResult.bestMatches[0].missingRequired.length})
+                                </h3>
+                                
+                                {analysisResult.bestMatches[0].missingRequired.map((skill: string, index: number) => {
+                                  const skillResources = learningPathService.getSkillResources(skill);
+                                  const skillCertifications = learningPathService.getSkillCertifications(skill);
+                                  
+                                  return (
+                                    <div key={skill} className="border rounded-lg p-6 bg-gradient-to-r from-red-50 to-orange-50 border-red-200">
+                                      <div className="flex items-center justify-between mb-4">
+                                        <div className="flex items-center gap-3">
+                                          <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center">
+                                            <span className="text-red-600 font-bold text-sm">{index + 1}</span>
+                                          </div>
+                                          <div>
+                                            <h4 className="font-semibold text-lg">{skill}</h4>
+                                            <p className="text-sm text-muted-foreground">
+                                              {skillResources.length} courses • {skillCertifications.length} certifications
+                                            </p>
+                                          </div>
+                                        </div>
+                                        <Badge variant="destructive">
+                                          Critical Priority
                                         </Badge>
-                                      ))}
-                                      {role.missingSkills.length > 6 && (
-                                        <Badge variant="outline" className="border-muted-foreground text-muted-foreground">
-                                          +{role.missingSkills.length - 6} more
-                                        </Badge>
+                                      </div>
+
+                                      {/* Learning Resources */}
+                                      {skillResources.length > 0 && (
+                                        <div className="space-y-3 mb-4">
+                                          <h5 className="font-medium text-sm">📚 Recommended Courses</h5>
+                                          {skillResources.slice(0, 3).map((resource) => (
+                                            <div key={resource.id} className="p-3 border rounded-lg bg-white hover:shadow-md transition-shadow">
+                                              <div className="flex items-start justify-between mb-2">
+                                                <div>
+                                                  <h6 className="font-semibold text-sm">{resource.title}</h6>
+                                                  <p className="text-xs text-muted-foreground">{resource.provider}</p>
+                                                </div>
+                                                <div className="flex gap-1">
+                                                  <Badge variant="outline" className="text-xs">
+                                                    {resource.cost === 'free' ? '🆓 Free' : '💳 Paid'}
+                                                  </Badge>
+                                                  <Badge variant="secondary" className="text-xs capitalize">
+                                                    {resource.difficulty}
+                                                  </Badge>
+                                                </div>
+                                              </div>
+                                              <div className="flex items-center justify-between">
+                                                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                                  <span>{resource.duration}</span>
+                                                  <span>•</span>
+                                                  <span>{resource.estimatedHours}h estimated</span>
+                                                </div>
+                                                <Button size="sm" variant="outline" asChild>
+                                                  <a href={resource.url} target="_blank" rel="noopener noreferrer">
+                                                    <ExternalLink className="w-3 h-3 mr-1" />
+                                                    Start Learning
+                                                  </a>
+                                                </Button>
+                                              </div>
+                                              {resource.description && (
+                                                <p className="text-xs text-muted-foreground mt-2">{resource.description}</p>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {/* Certifications */}
+                                      {skillCertifications.length > 0 && (
+                                        <div className="space-y-3">
+                                          <h5 className="font-medium text-sm">🏆 Industry Certifications</h5>
+                                          {skillCertifications.map((cert) => (
+                                            <div key={cert.id} className="p-3 border rounded-lg bg-green-50 border-green-200">
+                                              <div className="flex items-start justify-between mb-2">
+                                                <div>
+                                                  <h6 className="font-semibold text-sm">{cert.name}</h6>
+                                                  <p className="text-xs text-muted-foreground">{cert.provider}</p>
+                                                </div>
+                                                <Badge variant="outline" className="text-xs border-green-500 text-green-700">
+                                                  {cert.difficulty}
+                                                </Badge>
+                                              </div>
+                                              <div className="flex items-center justify-between">
+                                                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                                  <span>{cert.estimatedStudyHours}h study</span>
+                                                  {cert.validityPeriod && (
+                                                    <>
+                                                      <span>•</span>
+                                                      <span>Valid: {cert.validityPeriod}</span>
+                                                    </>
+                                                  )}
+                                                </div>
+                                                <Button size="sm" variant="outline" asChild>
+                                                  <a href={cert.url} target="_blank" rel="noopener noreferrer">
+                                                    <Award className="w-3 h-3 mr-1" />
+                                                    Learn More
+                                                  </a>
+                                                </Button>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
                                       )}
                                     </div>
-                                  </div>
-                                )}
+                                  );
+                                })}
+                              </div>
 
-                                {/* Learning Resources Preview */}
-                                <div className="grid md:grid-cols-3 gap-3">
-                                  {generateRoleBasedCourses(role).slice(0, 3).map((course, index) => (
-                                    <div key={index} className="p-3 border rounded-lg bg-white hover:shadow-md transition-shadow">
-                                      <div className="flex items-center gap-2 mb-2">
-                                        <BookOpen className="w-4 h-4 text-blue-500" />
-                                        <Badge variant="secondary" className="text-xs">
-                                          Course
-                                        </Badge>
-                                        {course.priority === 'high' && (
-                                          <Badge variant="destructive" className="text-xs">
-                                            Priority
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      <h4 className="font-semibold text-sm mb-1">{course.title}</h4>
-                                      <p className="text-xs text-muted-foreground">{course.provider}</p>
+                              {/* Learning Path Summary */}
+                              <div className="p-4 border rounded-lg bg-gradient-to-r from-blue-50 to-purple-50">
+                                <h4 className="font-semibold mb-2 flex items-center gap-2">
+                                  <Target className="w-4 h-4" />
+                                  Your Learning Journey
+                                </h4>
+                                <div className="grid md:grid-cols-3 gap-4 text-sm">
+                                  <div className="text-center">
+                                    <div className="text-2xl font-bold text-primary">
+                                      {analysisResult.bestMatches[0].missingRequired.length}
                                     </div>
-                                  ))}
-                                </div>
-
-                                {/* Certifications Preview */}
-                                <div className="mt-4">
-                                  <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
-                                    <Award className="w-4 h-4 text-green-500" />
-                                    Required Certifications ({generateRoleBasedCertifications(role).length})
-                                  </h4>
-                                  <div className="grid md:grid-cols-3 gap-3">
-                                    {generateRoleBasedCertifications(role).slice(0, 3).map((cert, index) => (
-                                      <div key={index} className="p-3 border rounded-lg bg-green-50 hover:shadow-md transition-shadow">
-                                        <div className="flex items-center gap-2 mb-2">
-                                          <Award className="w-4 h-4 text-green-500" />
-                                          <Badge variant="default" className="text-xs bg-green-500">
-                                            {cert.difficulty}
-                                          </Badge>
-                                          {cert.priority === 'high' && (
-                                            <Badge variant="destructive" className="text-xs">
-                                              Priority
-                                            </Badge>
-                                          )}
-                                        </div>
-                                        <h4 className="font-semibold text-sm mb-1">{cert.name}</h4>
-                                        <p className="text-xs text-muted-foreground">{cert.provider}</p>
-                                      </div>
-                                    ))}
+                                    <div className="text-muted-foreground">Skills to Learn</div>
+                                  </div>
+                                  <div className="text-center">
+                                    <div className="text-2xl font-bold text-primary">
+                                      {analysisResult.bestMatches[0].missingRequired.reduce((total: number, skill: string) => {
+                                        const resources = learningPathService.getSkillResources(skill);
+                                        return total + resources.reduce((sum, r) => sum + r.estimatedHours, 0);
+                                      }, 0)}h
+                                    </div>
+                                    <div className="text-muted-foreground">Estimated Study Time</div>
+                                  </div>
+                                  <div className="text-center">
+                                    <div className="text-2xl font-bold text-primary">
+                                      {Math.ceil(analysisResult.bestMatches[0].missingRequired.reduce((total: number, skill: string) => {
+                                        const resources = learningPathService.getSkillResources(skill);
+                                        return total + resources.reduce((sum, r) => sum + r.estimatedHours, 0);
+                                      }, 0) / 10)}
+                                    </div>
+                                    <div className="text-muted-foreground">Weeks (10h/week)</div>
                                   </div>
                                 </div>
                               </div>
-                            ))}
-                          </div>
+                            </div>
+                          ) : (
+                            <Alert>
+                              <CheckCircle className="h-4 w-4" />
+                              <AlertDescription>
+                                <strong>Excellent!</strong> Your skills are well-aligned with your target role. Consider exploring advanced topics or specializations to further enhance your expertise.
+                              </AlertDescription>
+                            </Alert>
+                          )}
 
-                          
                           <Alert className="mt-6">
                             <Lightbulb className="h-4 w-4" />
                             <AlertDescription>
-                              <strong>Pro Tip:</strong> Select a role that matches your career goals and add all its learning materials to your roadmap for structured progress tracking.
+                              <strong>Pro Tip:</strong> Start with free courses to build fundamentals, then invest in paid certifications for career advancement. Focus on one skill at a time for better retention.
                             </AlertDescription>
                           </Alert>
                         </CardContent>
@@ -1498,24 +1172,24 @@ ATS Resume Analysis Report
 Generated on: ${new Date().toLocaleDateString()}
 
 Overall ATS Score: ${analysisResult.overallScore}%
-Best Match Role: ${analysisResult.bestMatch.role} (${analysisResult.bestMatch.score}%)
+Best Match Role: ${analysisResult.bestMatches[0]?.role} (${analysisResult.bestMatches[0]?.score}%)
 
-Skills Detected (${analysisResult.extractedSkills.length}):
-${analysisResult.extractedSkills.join(', ')}
+Technical Skills Detected (${analysisResult.extractedSkills.technical?.length || 0}):
+${analysisResult.extractedSkills.technical?.join(', ') || 'None'}
 
-Target Role Analysis:
-${analysisResult.roleAnalysis.map(role => 
-  `${role.role}: ${role.score}% match (${role.requiredMatched}/${role.totalRequired} required skills)`
+Top Role Matches:
+${analysisResult.bestMatches.map(role => 
+  `${role.role}: ${role.score}% match (${role.matchedRequired?.length || 0}/${role.matchedRequired?.length + role.missingRequired?.length || 0} required skills)`
 ).join('\n')}
 
 Strengths:
-${analysisResult.strengths.map(s => `• ${s}`).join('\n')}
+${analysisResult.aiAnalysis?.strengths?.map(s => `• ${s}`).join('\n') || 'No specific strengths identified'}
 
 Areas for Improvement:
-${analysisResult.weaknesses.map(w => `• ${w}`).join('\n')}
+${analysisResult.aiAnalysis?.weaknesses?.map(w => `• ${w}`).join('\n') || 'No weaknesses identified'}
 
 Recommendations:
-${analysisResult.suggestions.map(s => `• ${s}`).join('\n')}
+${analysisResult.aiAnalysis?.recommendations?.map(s => `• ${s}`).join('\n') || 'No recommendations at this time'}
                         `;
                         
                         const blob = new Blob([reportContent], { type: 'text/plain' });

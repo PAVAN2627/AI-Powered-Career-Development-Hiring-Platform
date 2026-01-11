@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Input } from "@/components/ui/input";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
 import VideoInterviewAnalyzer from "@/components/interview/VideoInterviewAnalyzer";
 import AIVideoInterview from "@/components/interview/AIVideoInterview";
 import AIAudioInterview from "@/components/interview/AIAudioInterview";
@@ -710,11 +711,12 @@ const MockInterview = () => {
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
+      <MobileBottomNav />
       
       <div className="lg:ml-64 transition-all duration-300">
         <DashboardHeader />
         
-        <main className="p-6">
+        <main className="p-6 pb-20 lg:pb-6">
           {/* Header */}
           <div className="mb-8">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-foreground mb-2">

@@ -1,40 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Send, MessageSquare, Check, CheckCheck, ArrowLeft } from 'lucide-react';
+import { Send, MessageSquare, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
-import { UserProfileModal } from '@/components/UserProfileModal';
-import { MessageContextMenu } from '@/components/MessageContextMenu';
-import { LinkRenderer } from '@/lib/linkDetector';
 import { useAuth } from '@/contexts/SimpleAuthContext';
 import { useDirectMessages } from '@/hooks/useDirectMessages';
 import { useProfiles } from '@/hooks/useProfiles';
 import { toast } from 'sonner';
 
 export default function RecruiterMessages() {
-  const { user, profile } = useAuth();
+  const { currentUser, userProfile } = useAuth();
   const [searchParams] = useSearchParams();
-  const { messages, sendMessage, markAsRead, markConversationAsRead, getConversation, getConversationList, loading: messagesLoading, deleteMessage, editMessage } = useDirectMessages();
-  const { getProfileById, loading: profilesLoading } = useProfiles();
+  const { messages, sendMessage, markAsRead, markConversationAsRead, getConversation, getConversationList, loading: messagesLoading, deleteMessage, editMessage, subscribeToMessages } = useDirectMessages();
+  const { getProfileById, loadProfile, loading: profilesLoading } = useProfiles();
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
   const [messageText, setMessageText] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [profileModalOpen, setProfileModalOpen] = useState(false);
-  const [profileModalUser, setProfileModalUser] = useState<{ id: string; name: string } | null>(null);
-  const [contextMenu, setContextMenu] = useState<{
-    isOpen: boolean;
-    messageId: string;
-    messageContent: string;
-    position: { x: number; y: number };
-    isOwnMessage: boolean;
-  }>({
-    isOpen: false,
-    messageId: '',
-    messageContent: '',
-    position: { x: 0, y: 0 },
-    isOwnMessage: false,
-  });
   const [pressedMessageId, setPressedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -46,12 +28,22 @@ export default function RecruiterMessages() {
     }
   }, [searchParams, selectedConversation]);
 
+  // Subscribe to messages when conversation is selected
+  useEffect(() => {
+    if (selectedConversation) {
+      console.log('RecruiterMessages: Subscribing to messages for conversation:', selectedConversation);
+      subscribeToMessages(selectedConversation);
+      // Also load the profile of the other user
+      loadProfile(selectedConversation);
+    }
+  }, [selectedConversation, subscribeToMessages, loadProfile]);
+
   // Mark messages as read when conversation is selected
   useEffect(() => {
-    if (selectedConversation && user) {
+    if (selectedConversation && currentUser) {
       markConversationAsRead(selectedConversation);
     }
-  }, [selectedConversation, user, markConversationAsRead]);
+  }, [selectedConversation, currentUser, markConversationAsRead]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -66,14 +58,14 @@ export default function RecruiterMessages() {
   const selectedUserProfile = selectedConversation ? getProfileById(selectedConversation) : null;
 
   const handleSendMessage = async () => {
-    if (!messageText.trim() || !selectedConversation || !user || !profile) {
+    if (!messageText.trim() || !selectedConversation || !currentUser || !userProfile) {
       toast.error('Invalid message or conversation');
       return;
     }
 
     setIsSending(true);
     try {
-      await sendMessage(selectedConversation, messageText, profile.name, profile.avatar);
+      await sendMessage(selectedConversation, messageText, userProfile.displayName, '');
       setMessageText('');
       toast.success('Message sent!');
     } catch (error: any) {
@@ -83,47 +75,7 @@ export default function RecruiterMessages() {
     }
   };
 
-  const handleProfileClick = (userId: string, userName: string) => {
-    setProfileModalUser({ id: userId, name: userName });
-    setProfileModalOpen(true);
-  };
-
-  const handleMessageLongPress = (messageId: string, messageContent: string, isOwnMessage: boolean, event: React.MouseEvent) => {
-    event.preventDefault();
-    
-    // Add haptic feedback for mobile
-    if ('vibrate' in navigator) {
-      navigator.vibrate(50);
-    }
-    
-    setContextMenu({
-      isOpen: true,
-      messageId,
-      messageContent,
-      position: { x: event.clientX, y: event.clientY },
-      isOwnMessage,
-    });
-  };
-
-  const handleMessageEdit = async (newContent: string) => {
-    try {
-      await editMessage(contextMenu.messageId, newContent);
-      toast.success('Message edited successfully');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to edit message');
-    }
-  };
-
-  const handleMessageDelete = async () => {
-    try {
-      await deleteMessage(contextMenu.messageId);
-      toast.success('Message deleted successfully');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to delete message');
-    }
-  };
-
-  if (!user) {
+  if (!currentUser) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
@@ -158,19 +110,20 @@ export default function RecruiterMessages() {
               </div>
             ) : (
               conversations.map(conv => {
-                const otherUserId = conv.senderId === user.uid ? conv.recipientId : conv.senderId;
+                // Get the other participant's ID from the conversation
+                const otherUserId = conv.participants.studentId === currentUser?.uid 
+                  ? conv.participants.recruiterId 
+                  : conv.participants.studentId;
                 const otherUser = getProfileById(otherUserId);
-                const unreadCount = messages.filter(m => 
-                  m.recipientId === user.uid && m.senderId === otherUserId && !m.read
-                ).length;
+                const lastMessageTime = conv.lastMessage?.timestamp || conv.updatedAt;
 
                 return (
                   <button
-                    key={otherUserId}
-                    onClick={() => setSelectedConversation(otherUserId)}
+                    key={conv.id}
+                    onClick={() => setSelectedConversation(conv.id)}
                     className={`conversation-item w-full p-4 border-b border-border text-left hover:bg-accent transition-colors ${
-                      selectedConversation === otherUserId ? 'selected' : ''
-                    } ${unreadCount > 0 ? 'unread' : ''}`}
+                      selectedConversation === conv.id ? 'selected bg-accent' : ''
+                    }`}
                   >
                     <div className="flex items-center gap-3">
                       {otherUser?.avatar ? (
@@ -180,13 +133,6 @@ export default function RecruiterMessages() {
                             alt={otherUser.name}
                             className="w-12 h-12 rounded-full object-cover border-2 border-transparent"
                           />
-                          {unreadCount > 0 && (
-                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-primary rounded-full flex items-center justify-center">
-                              <span className="text-primary-foreground text-xs font-bold">
-                                {unreadCount > 9 ? '9+' : unreadCount}
-                              </span>
-                            </div>
-                          )}
                         </div>
                       ) : (
                         <div className="relative">
@@ -195,52 +141,27 @@ export default function RecruiterMessages() {
                               {otherUser?.name?.charAt(0)?.toUpperCase() || '?'}
                             </span>
                           </div>
-                          {unreadCount > 0 && (
-                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-primary rounded-full flex items-center justify-center">
-                              <span className="text-primary-foreground text-xs font-bold">
-                                {unreadCount > 9 ? '9+' : unreadCount}
-                              </span>
-                            </div>
-                          )}
                         </div>
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
-                          <h3 className={`font-medium truncate ${unreadCount > 0 ? 'text-foreground font-semibold' : 'text-foreground'}`}>
+                          <h3 className="font-medium truncate text-foreground">
                             {otherUser?.name || 'Unknown User'}
                           </h3>
                           <span className="text-xs text-muted-foreground flex-shrink-0">
-                            {new Date(conv.createdAt).toLocaleDateString('en-IN', { 
+                            {lastMessageTime ? new Date(lastMessageTime).toLocaleDateString('en-IN', { 
                               month: 'short', 
                               day: 'numeric',
                               hour: '2-digit',
                               minute: '2-digit'
-                            })}
+                            }) : ''}
                           </span>
                         </div>
                         <div className="flex items-center justify-between mt-1">
-                          <div className={`text-sm truncate ${unreadCount > 0 ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
-                            <span>{conv.senderId === user.uid ? 'You: ' : ''}</span>
-                            <LinkRenderer 
-                              text={conv.content} 
-                              className="inline"
-                            />
+                          <div className="text-sm truncate text-muted-foreground">
+                            {conv.lastMessage?.content || 'No messages yet'}
                           </div>
-                          {conv.senderId === user.uid && (
-                            <div className="flex-shrink-0 ml-2">
-                              {conv.read ? (
-                                <CheckCheck className="w-4 h-4 text-primary" />
-                              ) : (
-                                <Check className="w-4 h-4 text-muted-foreground" />
-                              )}
-                            </div>
-                          )}
                         </div>
-                        {otherUser?.college && (
-                          <p className="text-xs text-muted-foreground truncate mt-1">
-                            {otherUser.college}
-                          </p>
-                        )}
                       </div>
                     </div>
                   </button>
@@ -267,7 +188,7 @@ export default function RecruiterMessages() {
                 </Button>
                 
                 <button
-                  onClick={() => selectedUserProfile && handleProfileClick(selectedConversation, selectedUserProfile.name)}
+                  onClick={() => setSelectedConversation(null)}
                   className="flex-shrink-0 hover:opacity-80 transition-opacity"
                 >
                   {selectedUserProfile?.avatar ? (
@@ -285,10 +206,7 @@ export default function RecruiterMessages() {
                   )}
                 </button>
                 <div className="flex-1 min-w-0">
-                  <button
-                    onClick={() => selectedUserProfile && handleProfileClick(selectedConversation, selectedUserProfile.name)}
-                    className="text-left hover:opacity-80 transition-opacity w-full"
-                  >
+                  <div className="text-left">
                     <h2 className="font-semibold text-base md:text-lg truncate">{selectedUserProfile?.name || 'Unknown User'}</h2>
                     <div className="flex items-center gap-2 text-xs md:text-sm text-muted-foreground">
                       {selectedUserProfile?.college && (
@@ -301,7 +219,7 @@ export default function RecruiterMessages() {
                         <span className="truncate hidden sm:inline">{selectedUserProfile.location}</span>
                       )}
                     </div>
-                  </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -314,8 +232,8 @@ export default function RecruiterMessages() {
                 </div>
               ) : (
                 selectedMessages.map(msg => {
-                  const isCurrentUser = msg.senderId === user.uid;
-                  const senderProfile = isCurrentUser ? profile : getProfileById(msg.senderId);
+                  const isCurrentUser = msg.senderId === currentUser?.uid;
+                  const senderProfile = isCurrentUser ? userProfile : getProfileById(msg.senderId);
                   
                   return (
                     <div
@@ -323,10 +241,7 @@ export default function RecruiterMessages() {
                       className={`flex gap-2 md:gap-3 ${isCurrentUser ? 'justify-end' : 'justify-start'}`}
                     >
                       {!isCurrentUser && (
-                        <button
-                          onClick={() => senderProfile && handleProfileClick(msg.senderId, senderProfile.name)}
-                          className="flex-shrink-0 hover:opacity-80 transition-opacity"
-                        >
+                        <div className="flex-shrink-0">
                           {senderProfile?.avatar ? (
                             <img
                               src={senderProfile.avatar}
@@ -340,127 +255,43 @@ export default function RecruiterMessages() {
                               </span>
                             </div>
                           )}
-                        </button>
+                        </div>
                       )}
                       
                       <div className={`max-w-[75%] md:max-w-xs lg:max-w-md ${isCurrentUser ? 'order-1' : ''}`}>
                         <div
-                          className={`message-bubble px-3 py-2 md:px-4 md:py-3 rounded-2xl cursor-pointer select-none transition-all duration-150 ${
+                          className={`message-bubble px-3 py-2 md:px-4 md:py-3 rounded-2xl transition-all duration-150 ${
                             isCurrentUser
                               ? 'bg-primary text-primary-foreground rounded-br-md'
                               : 'bg-muted text-foreground rounded-bl-md'
-                          } ${pressedMessageId === msg.id ? 'scale-95 opacity-80' : ''}`}
-                          onContextMenu={(e) => handleMessageLongPress(msg.id, msg.content, isCurrentUser, e)}
-                          onTouchStart={(e) => {
-                            const touch = e.touches[0];
-                            const startTime = Date.now();
-                            const startX = touch.clientX;
-                            const startY = touch.clientY;
-                            
-                            const pressTimer = setTimeout(() => {
-                              // Visual feedback for long press
-                              setPressedMessageId(msg.id);
-                              
-                              // Prevent text selection during long press
-                              e.preventDefault();
-                              handleMessageLongPress(msg.id, msg.content, isCurrentUser, {
-                                clientX: startX,
-                                clientY: startY,
-                                preventDefault: () => {}
-                              } as any);
-                              
-                              // Reset visual feedback after menu opens
-                              setTimeout(() => setPressedMessageId(null), 100);
-                            }, 500);
-
-                            const handleTouchEnd = (endEvent: TouchEvent) => {
-                              clearTimeout(pressTimer);
-                              setPressedMessageId(null);
-                              const endTime = Date.now();
-                              const duration = endTime - startTime;
-                              
-                              // If it was a quick tap (less than 500ms), allow normal behavior
-                              if (duration < 500) {
-                                // This was a normal tap, don't prevent default
-                                return;
-                              }
-                              
-                              endEvent.preventDefault();
-                              document.removeEventListener('touchend', handleTouchEnd);
-                              document.removeEventListener('touchcancel', handleTouchCancel);
-                            };
-
-                            const handleTouchMove = (moveEvent: TouchEvent) => {
-                              const touch = moveEvent.touches[0];
-                              const deltaX = Math.abs(touch.clientX - startX);
-                              const deltaY = Math.abs(touch.clientY - startY);
-                              
-                              // If user moved finger too much, cancel long press
-                              if (deltaX > 10 || deltaY > 10) {
-                                clearTimeout(pressTimer);
-                                setPressedMessageId(null);
-                                document.removeEventListener('touchend', handleTouchEnd);
-                                document.removeEventListener('touchcancel', handleTouchCancel);
-                                document.removeEventListener('touchmove', handleTouchMove);
-                              }
-                            };
-
-                            const handleTouchCancel = () => {
-                              clearTimeout(pressTimer);
-                              setPressedMessageId(null);
-                              document.removeEventListener('touchend', handleTouchEnd);
-                              document.removeEventListener('touchcancel', handleTouchCancel);
-                              document.removeEventListener('touchmove', handleTouchMove);
-                            };
-
-                            document.addEventListener('touchend', handleTouchEnd, { passive: false });
-                            document.addEventListener('touchcancel', handleTouchCancel);
-                            document.addEventListener('touchmove', handleTouchMove, { passive: false });
-                          }}
+                          }`}
                         >
                           <div className="text-sm break-words leading-relaxed">
-                            <LinkRenderer 
-                              text={msg.content} 
-                              isOwnMessage={isCurrentUser}
-                            />
-                            {msg.edited && (
-                              <span className="text-xs opacity-70 ml-2">(edited)</span>
-                            )}
+                            {msg.content}
                           </div>
                         </div>
                         
                         <div className={`flex items-center gap-2 mt-1 px-1 ${isCurrentUser ? 'justify-end' : 'justify-start'}`}>
                           <span className="text-xs text-muted-foreground">
-                            {new Date(msg.createdAt).toLocaleTimeString([], { 
+                            {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { 
                               hour: '2-digit', 
                               minute: '2-digit' 
-                            })}
+                            }) : ''}
                           </span>
-                          {isCurrentUser && (
-                            <div className="flex items-center">
-                              {msg.read ? (
-                                <CheckCheck className="w-3 h-3 text-primary" />
-                              ) : (
-                                <Check className="w-3 h-3 text-muted-foreground" />
-                              )}
-                            </div>
-                          )}
                         </div>
                       </div>
 
                       {isCurrentUser && (
                         <div className="flex-shrink-0 order-2">
-                          {profile?.avatar ? (
-                            <img
-                              src={profile.avatar}
-                              alt={profile.name}
-                              className="w-6 h-6 md:w-8 md:h-8 rounded-full object-cover"
-                            />
-                          ) : (
+                          {userProfile?.displayName ? (
                             <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-primary/10 flex items-center justify-center">
                               <span className="text-primary font-semibold text-xs">
-                                {profile?.name?.charAt(0)?.toUpperCase() || '?'}
+                                {userProfile.displayName.charAt(0).toUpperCase()}
                               </span>
+                            </div>
+                          ) : (
+                            <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                              <span className="text-primary font-semibold text-xs">?</span>
                             </div>
                           )}
                         </div>
@@ -510,32 +341,6 @@ export default function RecruiterMessages() {
         )}
       </div>
 
-      {/* Profile Modal */}
-      <UserProfileModal
-        userId={profileModalUser?.id || null}
-        userName={profileModalUser?.name || ''}
-        isOpen={profileModalOpen}
-        onClose={() => {
-          setProfileModalOpen(false);
-          setProfileModalUser(null);
-        }}
-        onSendMessage={(userId) => {
-          setSelectedConversation(userId);
-          setProfileModalOpen(false);
-          setProfileModalUser(null);
-        }}
-      />
-
-      {/* Message Context Menu - Rendered via Portal */}
-      <MessageContextMenu
-        isOpen={contextMenu.isOpen}
-        onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
-        onEdit={handleMessageEdit}
-        onDelete={handleMessageDelete}
-        messageContent={contextMenu.messageContent}
-        position={contextMenu.position}
-        isOwnMessage={contextMenu.isOwnMessage}
-      />
     </div>
   );
 }

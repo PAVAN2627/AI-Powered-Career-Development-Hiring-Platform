@@ -175,6 +175,16 @@ class MessagingService {
     senderAvatar: string = ''
   ): Promise<string> {
     try {
+      console.log('MessagingService: sendMessage called with:', {
+        conversationId,
+        senderId,
+        senderName,
+        senderRole,
+        content: content.substring(0, 50) + '...',
+        messageType,
+        senderCompany
+      });
+
       const messagesRef = collection(db, 'messages');
       
       const messageData: Omit<Message, 'id'> = {
@@ -193,6 +203,7 @@ class MessagingService {
         reactions: {}
       };
 
+      console.log('MessagingService: Adding message to Firestore...');
       const docRef = await addDoc(messagesRef, {
         ...messageData,
         timestamp: serverTimestamp(),
@@ -204,12 +215,22 @@ class MessagingService {
         reactions: messageData.reactions || {}
       });
 
-      // Update conversation's last message and unread count
-      await this.updateConversationLastMessage(conversationId, content, senderId);
+      console.log('MessagingService: Message added with ID:', docRef.id);
 
+      // Update conversation's last message and unread count
+      console.log('MessagingService: Updating conversation last message...');
+      await this.updateConversationLastMessage(conversationId, content, senderId);
+      
+      console.log('MessagingService: Message sent successfully');
       return docRef.id;
-    } catch (error) {
-      console.error('Error sending message:', error);
+    } catch (error: any) {
+      console.error('MessagingService: Error sending message:', error);
+      console.error('MessagingService: Error details:', {
+        code: error.code,
+        message: error.message,
+        conversationId,
+        senderId
+      });
       throw error;
     }
   }
@@ -298,11 +319,11 @@ class MessagingService {
       
       console.log('MessagingService: Querying field:', field);
       
+      // Use a simpler query without orderBy to avoid index requirements
       const q = query(
         conversationsRef,
         where(field, '==', userId),
-        where('isActive', '==', true),
-        orderBy('updatedAt', 'desc')
+        where('isActive', '==', true)
       );
 
       return onSnapshot(q, (snapshot) => {
@@ -324,10 +345,18 @@ class MessagingService {
           };
         }) as Conversation[];
 
+        // Sort conversations by updatedAt in JavaScript instead of Firestore
+        conversations.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+
         console.log('MessagingService: Processed conversations:', conversations);
         callback(conversations);
       }, (error) => {
         console.error('MessagingService: Subscription error:', error);
+        
+        // If it's an index error, provide helpful guidance
+        if (error.message.includes('index')) {
+          console.error('Index required. Please create the index or use the alternative query method.');
+        }
       });
     } catch (error) {
       console.error('MessagingService: Error setting up subscription:', error);
@@ -341,23 +370,47 @@ class MessagingService {
     callback: (messages: Message[]) => void,
     limitCount: number = 50
   ): () => void {
+    console.log('MessagingService: Setting up message subscription for conversation:', conversationId);
+    
     const messagesRef = collection(db, 'messages');
+    
+    // Use simpler query without orderBy to avoid index requirements
     const q = query(
       messagesRef,
       where('conversationId', '==', conversationId),
-      orderBy('timestamp', 'desc'),
       limit(limitCount)
     );
 
     return onSnapshot(q, (snapshot) => {
-      const messages: Message[] = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate() || new Date()
-      })) as Message[];
+      console.log('MessagingService: Received message snapshot with', snapshot.docs.length, 'messages');
+      
+      const messages: Message[] = snapshot.docs.map(doc => {
+        const data = doc.data();
+        console.log('MessagingService: Processing message:', doc.id, {
+          content: data.content?.substring(0, 50) + '...',
+          senderId: data.senderId,
+          timestamp: data.timestamp
+        });
+        
+        return {
+          id: doc.id,
+          ...data,
+          timestamp: data.timestamp?.toDate() || new Date()
+        };
+      }) as Message[];
 
-      // Reverse to show oldest first
-      callback(messages.reverse());
+      // Sort by timestamp in JavaScript instead of Firestore
+      messages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      
+      console.log('MessagingService: Calling callback with', messages.length, 'messages');
+      callback(messages);
+    }, (error) => {
+      console.error('MessagingService: Message subscription error:', error);
+      
+      if (error.message.includes('index')) {
+        console.error('Index required for messages. Using fallback query...');
+        // Could implement a fallback here if needed
+      }
     });
   }
 
@@ -455,10 +508,11 @@ class MessagingService {
     callback: (indicators: TypingIndicator[]) => void
   ): () => void {
     const typingRef = collection(db, 'typing');
+    
+    // Use simpler query without orderBy to avoid index requirements
     const q = query(
       typingRef,
-      where('conversationId', '==', conversationId),
-      orderBy('timestamp', 'desc')
+      where('conversationId', '==', conversationId)
     );
 
     return onSnapshot(q, (snapshot) => {
@@ -467,13 +521,15 @@ class MessagingService {
         timestamp: doc.data().timestamp?.toDate() || new Date()
       })) as TypingIndicator[];
 
-      // Filter out old indicators (older than 5 seconds)
+      // Filter out old indicators (older than 5 seconds) and sort in JavaScript
       const now = new Date();
-      const activeIndicators = indicators.filter(
-        indicator => now.getTime() - indicator.timestamp.getTime() < 5000
-      );
+      const activeIndicators = indicators
+        .filter(indicator => now.getTime() - indicator.timestamp.getTime() < 5000)
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
       callback(activeIndicators);
+    }, (error) => {
+      console.error('Error subscribing to typing indicators:', error);
     });
   }
 
@@ -575,3 +631,6 @@ class MessagingService {
 }
 
 export const messagingService = new MessagingService();
+
+// Export types for use in other files
+export type { Message, Conversation, TypingIndicator };

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/SimpleAuthContext";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
 import QuickActionsCard from "@/components/dashboard/QuickActionsCard";
 import ResumeScoreCard from "@/components/dashboard/ResumeScoreCard";
 import RoadmapCard from "@/components/dashboard/RoadmapCard";
@@ -9,36 +10,23 @@ import InterviewPrepCard from "@/components/dashboard/InterviewPrepCard";
 import SkillsCard from "@/components/dashboard/SkillsCard";
 import ActivityCard from "@/components/dashboard/ActivityCard";
 import StudentMessages from "@/components/dashboard/StudentMessages";
-import { FileText, Mic, Target, TrendingUp, Loader2, Trophy, Clock, BarChart3, Zap, MessageSquare } from "lucide-react";
+import { FileText, Mic, Target, TrendingUp, Loader2, Trophy, Clock, BarChart3, Zap, MessageSquare, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-
-interface UserStats {
-  atsScore: number;
-  mockInterviews: number;
-  skillsCount: number;
-  roadmapProgress: number;
-  profileCompleteness: number;
-  lastInterviewScore: number;
-  totalInterviewTime: number;
-  averageScore: number;
-  improvementTrend: number;
-}
-
-interface InterviewResult {
-  role: string;
-  difficulty: string;
-  questionsAnswered: number;
-  totalQuestions: number;
-  averageScore: number;
-  totalScore: number;
-  duration: number;
-  timestamp: string;
-  type: 'audio' | 'video';
-}
+import { 
+  realtimeDataService, 
+  type UserStats, 
+  type InterviewResult, 
+  type ATSAnalysis, 
+  type RoadmapProgress,
+  type UserActivity 
+} from "@/lib/realtimeDataService";
+import { dataMigrationService } from "@/lib/dataMigration";
+import { toast } from "sonner";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 const Dashboard = () => {
   const { userProfile, currentUser, loading: authLoading } = useAuth();
@@ -52,96 +40,241 @@ const Dashboard = () => {
     lastInterviewScore: 0,
     totalInterviewTime: 0,
     averageScore: 0,
-    improvementTrend: 0
+    improvementTrend: 0,
+    lastUpdated: new Date()
   });
   const [recentInterviews, setRecentInterviews] = useState<InterviewResult[]>([]);
-  const [roadmapData, setRoadmapData] = useState<any>(null);
+  const [atsAnalyses, setAtsAnalyses] = useState<ATSAnalysis[]>([]);
+  const [roadmapData, setRoadmapData] = useState<RoadmapProgress | null>(null);
+  const [userActivities, setUserActivities] = useState<UserActivity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRealTimeConnected, setIsRealTimeConnected] = useState(false);
+  const [showMigrationPrompt, setShowMigrationPrompt] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
 
   console.log('Dashboard render:', { userProfile: !!userProfile, currentUser: !!currentUser, authLoading });
 
-  // Load real-time data
+  // Set up real-time Firebase listeners
   useEffect(() => {
-    const loadRealTimeData = () => {
-      try {
-        // Load interview results from localStorage
-        const interviewResults = JSON.parse(localStorage.getItem('interviewResults') || '[]') as InterviewResult[];
-        setRecentInterviews(interviewResults.slice(-5)); // Get last 5 interviews
-        
-        // Load ATS data from localStorage with user-specific key
-        const atsDataKey = userProfile?.uid ? `ats_analysis_${userProfile.uid}` : 'atsAnalysisResult';
-        const atsData = localStorage.getItem(atsDataKey) || localStorage.getItem('atsAnalysisResult');
-        let atsScore = 0;
-        let roadmapInfo = null;
-        
-        if (atsData) {
-          try {
-            const parsedAts = JSON.parse(atsData);
-            // Handle both old and new data formats
-            atsScore = parsedAts.overallScore || parsedAts.score || parsedAts.atsScore || 0;
-            roadmapInfo = parsedAts;
-            console.log('Loaded ATS data:', { atsScore, parsedAts });
-          } catch (e) {
-            console.warn('Failed to parse ATS data:', e);
+    if (!currentUser?.uid || authLoading) return;
+
+    console.log('Setting up real-time listeners for user:', currentUser.uid);
+    setLoading(true);
+
+    const unsubscribers: (() => void)[] = [];
+
+    try {
+      // Subscribe to user stats
+      const unsubStats = realtimeDataService.subscribeToUserStats(
+        currentUser.uid,
+        (newStats) => {
+          console.log('Received real-time stats update:', newStats);
+          setStats(newStats);
+          setIsRealTimeConnected(true);
+          setLoading(false);
+        }
+      );
+      unsubscribers.push(unsubStats);
+
+      // Subscribe to interview results
+      const unsubInterviews = realtimeDataService.subscribeToInterviewResults(
+        currentUser.uid,
+        (interviews) => {
+          console.log('Received real-time interviews update:', interviews.length, 'interviews');
+          setRecentInterviews(interviews);
+        }
+      );
+      unsubscribers.push(unsubInterviews);
+
+      // Subscribe to ATS analyses
+      const unsubATS = realtimeDataService.subscribeToATSAnalyses(
+        currentUser.uid,
+        (analyses) => {
+          console.log('Received real-time ATS analyses update:', analyses.length, 'analyses');
+          setAtsAnalyses(analyses);
+        }
+      );
+      unsubscribers.push(unsubATS);
+
+      // Subscribe to roadmap progress
+      const unsubRoadmap = realtimeDataService.subscribeToRoadmapProgress(
+        currentUser.uid,
+        (roadmap) => {
+          console.log('Received real-time roadmap update:', roadmap);
+          setRoadmapData(roadmap);
+        }
+      );
+      unsubscribers.push(unsubRoadmap);
+
+      // Subscribe to user activities
+      const unsubActivities = realtimeDataService.subscribeToUserActivities(
+        currentUser.uid,
+        (activities) => {
+          console.log('Received real-time activities update:', activities.length, 'activities');
+          setUserActivities(activities);
+        }
+      );
+      unsubscribers.push(unsubActivities);
+
+      // Calculate and update profile completeness
+      if (userProfile) {
+        const completeness = realtimeDataService.calculateProfileCompleteness(userProfile);
+        realtimeDataService.updateUserStats(currentUser.uid, {
+          profileCompleteness: completeness,
+          skillsCount: userProfile.skills?.length || 0
+        }).catch(console.error);
+      }
+
+      // Show success message
+      setTimeout(() => {
+        if (isRealTimeConnected) {
+          toast.success('Real-time data connected! Your dashboard will update automatically.');
+          
+          // Check if user has data to migrate
+          const migrationStatus = dataMigrationService.getMigrationStatus();
+          if (migrationStatus.needsMigration) {
+            setShowMigrationPrompt(true);
           }
         }
-        
-        // Calculate interview statistics
-        const totalInterviews = interviewResults.length;
-        const totalTime = interviewResults.reduce((sum, interview) => sum + (interview.duration || 0), 0);
-        const totalScores = interviewResults.reduce((sum, interview) => sum + interview.averageScore, 0);
-        const averageScore = totalInterviews > 0 ? Math.round(totalScores / totalInterviews) : 0;
-        const lastScore = interviewResults.length > 0 ? interviewResults[interviewResults.length - 1].averageScore : 0;
-        
-        // Calculate improvement trend (compare last 3 vs previous 3)
-        let improvementTrend = 0;
-        if (interviewResults.length >= 6) {
-          const recent3 = interviewResults.slice(-3);
-          const previous3 = interviewResults.slice(-6, -3);
-          const recentAvg = recent3.reduce((sum, i) => sum + i.averageScore, 0) / 3;
-          const previousAvg = previous3.reduce((sum, i) => sum + i.averageScore, 0) / 3;
-          improvementTrend = Math.round(recentAvg - previousAvg);
-        }
-        
-        // Calculate profile completeness
-        const profileCompleteness = userProfile ? Math.min(
-          (userProfile.displayName ? 15 : 0) +
-          (userProfile.email ? 15 : 0) +
-          (userProfile.skills?.length > 0 ? 20 : 0) +
-          (userProfile.experience ? 15 : 0) +
-          (userProfile.bio ? 15 : 0) +
-          (userProfile.linkedinUrl ? 10 : 0) +
-          (userProfile.githubUrl ? 10 : 0), 100
-        ) : 0;
-        
-        setStats({
-          atsScore,
-          mockInterviews: totalInterviews,
-          skillsCount: userProfile?.skills?.length || 0,
-          roadmapProgress: atsScore > 0 ? Math.min(atsScore + 20, 100) : 0,
-          profileCompleteness,
-          lastInterviewScore: lastScore,
-          totalInterviewTime: Math.round(totalTime / 60), // Convert to minutes
-          averageScore,
-          improvementTrend
-        });
-        
-        setRoadmapData(roadmapInfo);
-        
-      } catch (error) {
-        console.error('Failed to load real-time data:', error);
-      }
-    };
+      }, 2000);
 
-    if (!authLoading) {
-      loadRealTimeData();
+    } catch (error) {
+      console.error('Error setting up real-time listeners:', error);
       setLoading(false);
-      
-      // Set up interval to refresh data every 30 seconds
-      const interval = setInterval(loadRealTimeData, 30000);
-      return () => clearInterval(interval);
+      toast.error('Failed to connect to real-time data. Some features may not work properly.');
     }
-  }, [authLoading, userProfile]);
+
+    // Cleanup function
+    return () => {
+      console.log('Cleaning up real-time listeners');
+      unsubscribers.forEach(unsubscribe => unsubscribe());
+    };
+  }, [currentUser?.uid, authLoading, userProfile]);
+
+  // Fallback to localStorage data if Firebase data is not available
+  useEffect(() => {
+    if (!isRealTimeConnected && !authLoading && currentUser?.uid) {
+      console.log('Loading fallback data from localStorage');
+      loadFallbackData();
+    }
+  }, [isRealTimeConnected, authLoading, currentUser?.uid]);
+
+  const loadFallbackData = () => {
+    try {
+      // Load interview results from localStorage
+      const interviewResults = JSON.parse(localStorage.getItem('interviewResults') || '[]') as any[];
+      const formattedInterviews = interviewResults.map(interview => ({
+        ...interview,
+        id: interview.id || Date.now().toString(),
+        userId: currentUser?.uid || '',
+        timestamp: new Date(interview.timestamp)
+      }));
+      setRecentInterviews(formattedInterviews.slice(-5));
+      
+      // Load ATS data from localStorage
+      const atsDataKey = userProfile?.uid ? `ats_analysis_${userProfile.uid}` : 'atsAnalysisResult';
+      const atsData = localStorage.getItem(atsDataKey) || localStorage.getItem('atsAnalysisResult');
+      let atsScore = 0;
+      
+      if (atsData) {
+        try {
+          const parsedAts = JSON.parse(atsData);
+          atsScore = parsedAts.overallScore || parsedAts.score || parsedAts.atsScore || 0;
+          
+          // Convert to ATSAnalysis format
+          const atsAnalysis: ATSAnalysis = {
+            id: 'fallback',
+            userId: currentUser?.uid || '',
+            overallScore: atsScore,
+            skillsMatch: parsedAts.skillsMatch || 0,
+            experienceMatch: parsedAts.experienceMatch || 0,
+            educationMatch: parsedAts.educationMatch || 0,
+            keywordsFound: parsedAts.keywordsFound || [],
+            missingKeywords: parsedAts.missingKeywords || [],
+            suggestions: parsedAts.suggestions || [],
+            jobTitle: parsedAts.jobTitle || 'Unknown',
+            timestamp: new Date()
+          };
+          setAtsAnalyses([atsAnalysis]);
+        } catch (e) {
+          console.warn('Failed to parse ATS data:', e);
+        }
+      }
+      
+      // Calculate stats from fallback data
+      const totalInterviews = formattedInterviews.length;
+      const totalTime = formattedInterviews.reduce((sum, interview) => sum + (interview.duration || 0), 0);
+      const totalScores = formattedInterviews.reduce((sum, interview) => sum + interview.averageScore, 0);
+      const averageScore = totalInterviews > 0 ? Math.round(totalScores / totalInterviews) : 0;
+      const lastScore = formattedInterviews.length > 0 ? formattedInterviews[formattedInterviews.length - 1].averageScore : 0;
+      
+      const profileCompleteness = userProfile ? realtimeDataService.calculateProfileCompleteness(userProfile) : 0;
+      
+      setStats({
+        atsScore,
+        mockInterviews: totalInterviews,
+        skillsCount: userProfile?.skills?.length || 0,
+        roadmapProgress: atsScore > 0 ? Math.min(atsScore + 20, 100) : 0,
+        profileCompleteness,
+        lastInterviewScore: lastScore,
+        totalInterviewTime: Math.round(totalTime / 60),
+        averageScore,
+        improvementTrend: 0,
+        lastUpdated: new Date()
+      });
+      
+      setLoading(false);
+      toast.info('Using offline data. Connect to internet for real-time updates.');
+      
+    } catch (error) {
+      console.error('Failed to load fallback data:', error);
+      setLoading(false);
+    }
+  };
+
+  const handleMigrateData = async () => {
+    if (!currentUser?.uid) return;
+    
+    setIsMigrating(true);
+    try {
+      toast.info('Migrating your data to real-time storage...');
+      await dataMigrationService.migrateAllUserData(currentUser.uid);
+      toast.success('Data migration completed! Your dashboard now shows real-time data.');
+      setShowMigrationPrompt(false);
+    } catch (error) {
+      console.error('Migration failed:', error);
+      toast.error('Failed to migrate data. Please try again.');
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleDismissMigration = () => {
+    setShowMigrationPrompt(false);
+    toast.info('You can migrate your data later from the settings.');
+  };
+
+  const handleRefreshData = async () => {
+    if (!currentUser?.uid) return;
+    
+    try {
+      toast.info('Refreshing real-time data...');
+      
+      // Force recalculate profile completeness
+      if (userProfile) {
+        const completeness = realtimeDataService.calculateProfileCompleteness(userProfile);
+        await realtimeDataService.updateUserStats(currentUser.uid, {
+          profileCompleteness: completeness,
+          skillsCount: userProfile.skills?.length || 0
+        });
+      }
+      
+      toast.success('Data refreshed successfully!');
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+      toast.error('Failed to refresh data');
+    }
+  };
 
   if (authLoading || loading) {
     return (
@@ -170,11 +303,51 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
+      <MobileBottomNav />
       
       <div className="lg:ml-64 transition-all duration-300">
         <DashboardHeader />
         
-        <main className="p-6">
+        <main className="p-6 pb-20 lg:pb-6">
+          {/* Data Migration Prompt */}
+          {showMigrationPrompt && (
+            <Alert className="mb-6 border-blue-200 bg-blue-50">
+              <AlertDescription className="flex items-center justify-between">
+                <div>
+                  <strong>Upgrade to Real-time Data!</strong>
+                  <p className="text-sm mt-1">
+                    We found your interview results and ATS analysis in local storage. 
+                    Migrate them to our new real-time system for better performance and cross-device sync.
+                  </p>
+                </div>
+                <div className="flex gap-2 ml-4">
+                  <Button 
+                    size="sm" 
+                    onClick={handleMigrateData}
+                    disabled={isMigrating}
+                  >
+                    {isMigrating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Migrating...
+                      </>
+                    ) : (
+                      'Migrate Data'
+                    )}
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    variant="outline" 
+                    onClick={handleDismissMigration}
+                    disabled={isMigrating}
+                  >
+                    Later
+                  </Button>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="mb-6">
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid w-full grid-cols-2">
@@ -196,17 +369,23 @@ const Dashboard = () => {
                   <p className="text-muted-foreground mb-4">
                     Here's your real-time career progress and performance analytics
                   </p>
-                  {stats.mockInterviews > 0 && (
-                    <div className="flex items-center gap-4 text-sm">
-                      <Badge variant="secondary" className="flex items-center gap-1">
-                        <Zap className="w-3 h-3" />
-                        Live Data
-                      </Badge>
-                      <span className="text-muted-foreground">
-                        Last updated: {new Date().toLocaleTimeString()}
-                      </span>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-4 text-sm">
+                    <Badge variant={isRealTimeConnected ? "default" : "secondary"} className="flex items-center gap-1">
+                      <Zap className="w-3 h-3" />
+                      {isRealTimeConnected ? 'Live Data' : 'Offline Data'}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      Last updated: {stats.lastUpdated.toLocaleTimeString()}
+                    </span>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={handleRefreshData}
+                      className="h-6 px-2"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                    </Button>
+                  </div>
                 </div>
             
           {/* Real-time Stats Grid */}
@@ -331,7 +510,7 @@ const Dashboard = () => {
                           {interview.questionsAnswered}/{interview.totalQuestions} questions • {Math.round(interview.duration / 60)}min
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
-                          {new Date(interview.timestamp).toLocaleDateString()}
+                          {interview.timestamp.toLocaleDateString()}
                         </div>
                         <Progress value={interview.averageScore} className="h-1 mt-2" />
                       </div>
@@ -347,7 +526,7 @@ const Dashboard = () => {
           </div>
           
           <div className="grid lg:grid-cols-2 gap-6 mb-8">
-            <ResumeScoreCard atsScore={stats.atsScore} roadmapData={roadmapData} />
+            <ResumeScoreCard atsScore={stats.atsScore} roadmapData={atsAnalyses[0] || roadmapData} />
             <RoadmapCard progress={stats.roadmapProgress} roadmapData={roadmapData} />
           </div>
           
