@@ -174,15 +174,6 @@ const Login = () => {
               </Button>
             </form>
 
-            {/* Default Admin Credentials Info */}
-            <div className="mt-6 p-3 bg-muted/50 rounded-lg">
-              <p className="text-xs text-muted-foreground text-center">
-                <strong>Default Admin Login:</strong><br />
-                Email: admin@careermitra.com<br />
-                Password: Admin@123
-              </p>
-            </div>
-
             <div className="mt-6 text-center space-y-4">
               <div className="text-sm text-muted-foreground">
                 Don't have an account?{" "}
